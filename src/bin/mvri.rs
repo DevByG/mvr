@@ -58,6 +58,13 @@ impl Input {
         }
     }
 
+    fn delete(&mut self) {
+        if self.cursor < self.text.len() {
+            let end = next_boundary(&self.text, self.cursor);
+            self.text.drain(self.cursor..end);
+        }
+    }
+
     fn left(&mut self) {
         if self.cursor > 0 {
             self.cursor = prev_boundary(&self.text, self.cursor);
@@ -241,6 +248,10 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
             }
             KeyCode::Backspace => {
                 app.inputs[app.focus].backspace();
+                true
+            }
+            KeyCode::Delete => {
+                app.inputs[app.focus].delete();
                 true
             }
             KeyCode::Left => {

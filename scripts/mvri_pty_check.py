@@ -245,6 +245,17 @@ def main():
         and "deep" not in chunks[1]
         and "переименовано: 1" in chunks[5], chunks[4][:400]))
 
+    chunks, clean = drive(e, [
+        (b"xy", 0.3),
+        (b"\x1b[D", 0.2),          # ← курсор перед y
+        (b"\x1b[3~", 0.3),         # Delete: убрать y
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("Delete: удаляет символ под курсором",
+        "│x│" in flat(chunks[3]) and "│xy│" not in flat(chunks[3]),
+        repr(chunks[3][:400])))
+
     sys.exit(0 if all(results) else 1)
 
 

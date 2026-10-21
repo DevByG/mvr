@@ -226,13 +226,16 @@ def main():
         (b"new", 0.3),
         (RESIZE, 0.4),
         (("touch", f"{g}/new2.txt"), 0.1),
-        (b"\x1b[15~", 0.2),
-        (b"", 2.8),
+        (b"", 2.6),
+        (RESIZE, 0.5),
+        (b"\x1b[15~", 0.3),
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("scan: background/F5 picks up new file",
-        "matches: 1" in chunks[1] and "matches: 2" in chunks[5], chunks[5][:300]))
+    results.append(check("no tick: fs changes wait for F5",
+        "matches: 1" in chunks[1] and "matches: 1" in chunks[4], chunks[4][:300]))
+    results.append(check("F5 picks up new file",
+        "matches: 2" in chunks[6], chunks[6][:300]))
 
     chunks, clean = drive(h, [
         (b"(\\d+)/x\\.txt", 0.4),

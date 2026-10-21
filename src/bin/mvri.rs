@@ -339,7 +339,7 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
     .areas(frame.area());
 
     let title = Line::from(vec![
-        Span::styled("rmvi", Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled("mvri", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(
             if app.recursive { " [-r]" } else { "" },
             Style::new().fg(Color::Yellow),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Живой pty-смоук rmvi: гоняет TUI в псевдотерминале, проверяет кадры через
+# Живой pty-смоук mvri: гоняет TUI в псевдотерминале, проверяет кадры через
 # SIGWINCH-перерисовку (полный кадр ratatui), применение, Esc и битый regex.
-# Запуск: python3 scripts/rmvi_pty_check.py [путь-к-rmvi]
+# Запуск: python3 scripts/mvri_pty_check.py [путь-к-mvri]
 import fcntl
 import os
 import pty
@@ -13,7 +13,7 @@ import termios
 import time
 
 RMVI = (sys.argv[1] if len(sys.argv) > 1
-       else os.path.join(os.path.dirname(__file__), "..", "target", "release", "rmvi"))
+       else os.path.join(os.path.dirname(__file__), "..", "target", "release", "mvri"))
 ANSI = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][0-9A-B]|\x1b[=>]|\x1b[78]|\x1b\][^\x07]*\x07|\r"
 )
@@ -93,7 +93,7 @@ def check(name, ok, detail=""):
 
 def main():
     results = []
-    base = "/tmp/rmvi-pty"
+    base = "/tmp/mvri-pty"
     os.system(f"rm -rf {base}")
     a, b, c = f"{base}/a", f"{base}/b", f"{base}/c"
     for d in (a, b, c):

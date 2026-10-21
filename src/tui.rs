@@ -13,6 +13,7 @@ use ratatui::widgets::{
 };
 use ratatui::{DefaultTerminal, Frame};
 
+use mvr::messages::Messages;
 use mvr::{
     apply, compile_matchers, match_paths, parse_replacement, plan_outcome, planned_prunes,
     ApplyOutcome, Rename, Scanner,
@@ -100,6 +101,7 @@ fn next_boundary(text: &str, index: usize) -> usize {
 }
 
 struct App {
+    msg: &'static Messages,
     inputs: [Input; 2],
     focus: usize,
     case_insensitive: bool,
@@ -136,6 +138,7 @@ struct View {
 
 fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut app = App {
+        msg: mvr::messages::detect(),
         inputs: [Input::new(), Input::new()],
         focus: 0,
         case_insensitive: true,
@@ -215,7 +218,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
             KeyCode::Enter => {
                 if let Some(renames) = &view.applyable {
                     let outcome = apply(Path::new("."), renames);
-                    app.summary = Some(summarize(&outcome, renames.len()));
+                    app.summary = Some(summarize(&outcome, renames.len(), app.msg));
                     force_scan = true;
                 }
                 false
@@ -339,10 +342,7 @@ fn build_view(app: &App) -> View {
     let regex_text = app.inputs[0].text.as_str();
     if regex_text.trim().is_empty() {
         return View {
-            body: vec![Line::styled(
-                " type a regex - matches appear here live",
-                DIM,
-            )],
+            body: vec![Line::styled(app.msg.type_regex_hint, DIM)],
             ..empty
         };
     }
@@ -363,7 +363,7 @@ fn build_view(app: &App) -> View {
         .collect();
     if matched.is_empty() {
         return View {
-            status: Some("nothing found".into()),
+            status: Some(app.msg.nothing_found.into()),
             ..empty
         };
     }
@@ -384,7 +384,10 @@ fn build_view(app: &App) -> View {
         return View {
             match_count: matched.len(),
             body: froms,
-            status: outcome.error.is_none().then(|| "nothing to change".into()),
+            status: outcome
+                .error
+                .is_none()
+                .then(|| app.msg.nothing_to_change.into()),
             error: outcome.error.map(|err| err.to_string()),
             ..empty
         };
@@ -420,10 +423,7 @@ fn build_view(app: &App) -> View {
         let prunes = planned_prunes(&app.paths, &outcome.renames);
         if !prunes.is_empty() {
             body.push(Line::from(vec![
-                Span::styled(
-                    "will be emptied and removed: ",
-                    Style::new().fg(Color::Yellow),
-                ),
+                Span::styled(app.msg.emptied_removed, Style::new().fg(Color::Yellow)),
                 Span::from(prunes.join(", ")),
             ]));
         }
@@ -438,12 +438,13 @@ fn build_view(app: &App) -> View {
     }
 }
 
-fn summarize(outcome: &ApplyOutcome, total: usize) -> String {
+fn summarize(outcome: &ApplyOutcome, total: usize, msg: &Messages) -> String {
     let done = total - outcome.failures.len();
-    let mut text = format!("renamed: {done}");
+    let mut text = format!("{}{done}", msg.renamed_prefix);
     if !outcome.pruned_dirs.is_empty() {
         text.push_str(&format!(
-            "; removed empty dirs: {}",
+            "{}{}",
+            msg.removed_empty_dirs,
             outcome.pruned_dirs.join(", ")
         ));
     }
@@ -473,18 +474,23 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
         Span::styled("mvr", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(
             format!(
-                "  ·  files: {}  ·  matches: {}",
+                "  ·  {}: {}  ·  {}: {}",
+                app.msg.files,
                 app.paths.len(),
+                app.msg.matches,
                 view.match_count
             ),
             DIM,
         ),
         Span::styled(
-            if app.case_insensitive {
-                "  ·  case: ignored"
-            } else {
-                "  ·  case: exact"
-            },
+            format!(
+                "  ·  {}",
+                if app.case_insensitive {
+                    app.msg.case_ignored
+                } else {
+                    app.msg.case_exact
+                }
+            ),
             DIM,
         ),
     ]);
@@ -505,7 +511,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     render_input(
         frame,
         pattern_area,
-        " pattern ",
+        app.msg.pattern_label,
         &app.inputs[1],
         app.focus == 1,
     );
@@ -533,9 +539,9 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     }
 
     let help = if app.summary.is_some() {
-        " any key to quit"
+        app.msg.any_key_quit
     } else {
-        " Tab fields · Enter next/apply · Ctrl+T case · F5 rescan · ↑↓ PgUp/PgDn scroll · Esc quit"
+        app.msg.help
     };
     frame.render_widget(Paragraph::new(help).style(DIM), help_area);
 }
@@ -549,7 +555,7 @@ fn render_case_button(frame: &mut Frame, area: Rect, app: &App) {
     let button = Block::new()
         .borders(Borders::ALL)
         .border_style(style)
-        .title(Span::styled(" case ", style));
+        .title(Span::styled(app.msg.case_label, style));
     frame.render_widget(
         Paragraph::new(Span::styled("[Tt]", style))
             .alignment(Alignment::Center)
@@ -605,7 +611,10 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App, view: &View) {
     if hidden > 0 {
         let keep = visible.saturating_sub(1);
         shown.truncate(keep);
-        shown.push(Line::styled(format!(" ... +{hidden} more"), DIM));
+        shown.push(Line::styled(
+            format!(" ... +{hidden}{}", app.msg.more_suffix),
+            DIM,
+        ));
     }
     frame.render_widget(Paragraph::new(shown), content_area);
 

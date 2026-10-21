@@ -1,3 +1,5 @@
+pub mod messages;
+
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -651,6 +653,19 @@ mod tests {
 
         let forced = scanner.scan(&matchers, true).unwrap();
         assert!(forced.contains(&"01/b.txt".to_string()));
+    }
+
+    #[test]
+    fn language_detection_parses_locale_forms() {
+        use crate::messages::{lang_of, EN, RU};
+
+        assert!(std::ptr::eq(lang_of("ru_RU.UTF-8"), &RU));
+        assert!(std::ptr::eq(lang_of("RU"), &RU));
+        assert!(std::ptr::eq(lang_of("ru"), &RU));
+        assert!(std::ptr::eq(lang_of("en_US.UTF-8"), &EN));
+        assert!(std::ptr::eq(lang_of("C"), &EN));
+        assert!(std::ptr::eq(lang_of(""), &EN));
+        assert!(std::ptr::eq(lang_of("ru:en"), &RU));
     }
 
     #[test]

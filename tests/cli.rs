@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 fn run(dir: &std::path::Path, args: &[&str], answer: &str) -> (String, String, Option<i32>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mvr"))
         .args(args)
+        .env("LC_ALL", "en_US.UTF-8")
+        .env_remove("MVR_LANG")
         .current_dir(dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -18,6 +20,37 @@ fn run(dir: &std::path::Path, args: &[&str], answer: &str) -> (String, String, O
         .write_all(answer.as_bytes())
         .unwrap();
     let output = child.wait_with_output().expect("wait mvr");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code(),
+    )
+}
+
+fn run_env(
+    dir: &std::path::Path,
+    args: &[&str],
+    answer: &str,
+    envs: &[(&str, &str)],
+) -> (String, String, Option<i32>) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mvr"));
+    command
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(answer.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -264,4 +297,21 @@ fn no_match_reported_before_pattern_group_errors() {
     assert_eq!(code, Some(1), "stderr: {stderr}");
     assert!(stdout.contains("nothing found"), "stdout: {stdout}");
     assert!(!stderr.contains("$2"), "stderr: {stderr}");
+}
+
+#[test]
+fn mvr_lang_switches_interface_language() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "img_1.jpg");
+
+    let (stdout, stderr, code) = run_env(
+        dir.path(),
+        &[r"img_(\d+)\.jpg", "photo_$1.jpg"],
+        "y\n",
+        &[("MVR_LANG", "ru")],
+    );
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("переименовать? (N/y)"), "stdout: {stdout}");
+    assert!(stdout.contains("переименовано: 1"), "stdout: {stdout}");
 }

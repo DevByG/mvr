@@ -5,6 +5,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
+use mvr::messages::Messages;
 use mvr::{apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, Scanner};
 
 const USAGE: &str = "\
@@ -50,7 +51,7 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
-    cli(regex_arg, pattern_arg)
+    cli(regex_arg, pattern_arg, mvr::messages::detect())
 }
 
 fn interactive_or_usage() -> ExitCode {
@@ -67,7 +68,7 @@ fn interactive_or_usage() -> ExitCode {
     ExitCode::from(2)
 }
 
-fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
+fn cli(regex_arg: &str, pattern_arg: &str, msg: &'static Messages) -> ExitCode {
     let matchers = match compile_matchers(regex_arg, true) {
         Ok(matchers) => matchers,
         Err(err) => {
@@ -85,7 +86,7 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
 
     let matched = match_paths(&paths, &matchers);
     if matched.is_empty() {
-        println!("nothing found");
+        println!("{}", msg.nothing_found);
         return ExitCode::from(1);
     }
 
@@ -98,7 +99,7 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
         }
     };
     if renames.is_empty() {
-        println!("nothing to change");
+        println!("{}", msg.nothing_to_change);
         return ExitCode::SUCCESS;
     }
 
@@ -107,13 +108,13 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     }
     let prunes = planned_prunes(&paths, &renames);
     if !prunes.is_empty() {
-        println!("will be emptied and removed: {}", prunes.join(", "));
+        println!("{}{}", msg.emptied_removed, prunes.join(", "));
     }
 
-    match confirm() {
-        Ok(true) => finish(Path::new("."), &renames),
+    match confirm(msg) {
+        Ok(true) => finish(Path::new("."), &renames, msg),
         Ok(false) => {
-            println!("cancelled");
+            println!("{}", msg.cancelled);
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -123,8 +124,8 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     }
 }
 
-fn confirm() -> io::Result<bool> {
-    print!("rename? (N/y) ");
+fn confirm(msg: &Messages) -> io::Result<bool> {
+    print!("{}", msg.rename_prompt);
     io::stdout().flush()?;
     if io::stdin().is_terminal() {
         return read_key();
@@ -155,20 +156,20 @@ fn read_key() -> io::Result<bool> {
     answer
 }
 
-fn finish(dir: &Path, renames: &[mvr::Rename]) -> ExitCode {
+fn finish(dir: &Path, renames: &[mvr::Rename], msg: &Messages) -> ExitCode {
     let outcome = apply(dir, renames);
     let done = renames.len() - outcome.failures.len();
     for (rename, err) in &outcome.failures {
         eprintln!("failed {} => {}: {}", rename.from, rename.to, err);
     }
-    println!("renamed: {done}");
+    println!("{}{done}", msg.renamed_prefix);
     if !outcome.pruned_dirs.is_empty() {
         println!("removed empty dirs: {}", outcome.pruned_dirs.join(", "));
     }
     if outcome.failures.is_empty() {
         ExitCode::SUCCESS
     } else {
-        eprintln!("errors: {}", outcome.failures.len());
+        eprintln!("{}{}", msg.errors_prefix, outcome.failures.len());
         ExitCode::from(1)
     }
 }

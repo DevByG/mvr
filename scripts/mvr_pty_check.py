@@ -37,6 +37,8 @@ def drain(master, out, seconds):
 
 
 def drive(cwd, script, args=()):
+    os.environ["LC_ALL"] = "en_US.UTF-8"
+    os.environ.pop("MVR_LANG", None)
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     pid = os.fork()

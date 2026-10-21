@@ -68,7 +68,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let paths = match scan_paths(recursive) {
+    let paths = match scan_paths(recursive, matchers.len()) {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("не могу прочитать текущий каталог: {err}");

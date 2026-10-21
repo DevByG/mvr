@@ -131,16 +131,32 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
     };
 
     let mut last_scan = Instant::now();
+    let mut scan_depth = 0;
+    let mut view: Option<View> = None;
+    let mut rebuild = true;
     loop {
-        // плоский каталог дёшев — освежаем фоном; рекурсивное дерево дорого,
-        // его трогаем только явно (F5) или после применения
-        if app.scan_pending || (!app.recursive && last_scan.elapsed() > Duration::from_secs(2)) {
-            app.paths = scan_paths(app.recursive)?;
+        // плоский каталог дёшев — освежаем фоном; рекурсивное дерево дорого —
+        // только явно (F5/применение) да при смене глубины шаблона,
+        // и обход ограничен самой этой глубиной: глубже паттерну нечего матчить
+        let pattern_depth = match compile_matchers(&app.inputs[0].text, app.case_insensitive) {
+            Ok(matchers) => matchers.len(),
+            Err(_) => 1,
+        };
+        if app.scan_pending
+            || (app.recursive && scan_depth != pattern_depth)
+            || (!app.recursive && last_scan.elapsed() > Duration::from_secs(2))
+        {
+            app.paths = scan_paths(app.recursive, pattern_depth)?;
+            scan_depth = pattern_depth;
             app.scan_pending = false;
             last_scan = Instant::now();
+            rebuild = true;
         }
-        let view = build_view(&app);
-        terminal.draw(|frame| render(frame, &mut app, &view))?;
+        if rebuild || view.is_none() {
+            view = Some(build_view(&app));
+            rebuild = false;
+        }
+        terminal.draw(|frame| render(frame, &mut app, view.as_ref().unwrap()))?;
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
@@ -161,6 +177,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
                     app.focus = 1;
                 }
             }
+            rebuild = true;
             continue;
         }
         let Event::Key(key) = event else {
@@ -199,7 +216,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
                 false
             }
             KeyCode::Enter => {
-                if let Some(renames) = &view.applyable {
+                if let Some(renames) = &view.as_ref().unwrap().applyable {
                     let outcome = apply(Path::new("."), renames);
                     app.summary = Some(summarize(&outcome, renames.len()));
                     app.scan_pending = true;
@@ -251,6 +268,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         if handled_edit {
             app.scroll = 0;
         }
+        rebuild = true;
     }
     Ok(())
 }

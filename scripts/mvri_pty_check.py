@@ -36,7 +36,7 @@ def drain(master, out, seconds):
     return out, True
 
 
-def drive(cwd, script):
+def drive(cwd, script, args=()):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     pid = os.fork()
@@ -48,7 +48,7 @@ def drive(cwd, script):
         os.close(master)
         os.close(slave)
         os.chdir(cwd)
-        os.execv(RMVI, [RMVI])
+        os.execv(RMVI, [RMVI, *args])
     os.close(slave)
 
     chunks = []
@@ -118,6 +118,10 @@ def main():
     open(f"{f_}/a.txt", "w").close()
     open(f"{f_}/b.txt", "w").close()
     open(f"{g}/new1.txt", "w").close()
+    h = f"{base}/h"
+    os.makedirs(f"{h}/01/sub/deep")
+    open(f"{h}/01/x.txt", "w").close()
+    open(f"{h}/01/sub/deep/x.txt", "w").close()
 
     chunks, clean = drive(a, [
         (b"source (\\d+) junk\\.mkv", 0.4),
@@ -226,6 +230,20 @@ def main():
     ])
     results.append(check("скан: фон/F5 подхватывает новый файл",
         "матчей: 1" in chunks[1] and "матчей: 2" in chunks[5], chunks[5][:300]))
+
+    chunks, clean = drive(h, [
+        (b"(\\d+)/x\\.txt", 0.4),
+        (RESIZE, 0.5),
+        (b"\r", 0.2),
+        (b"z-$1.txt", 0.4),
+        (RESIZE, 0.5),
+        (b"\r", 0.4),
+        (b"\r", 0.4),
+    ], args=["-r"])
+    results.append(check("r: bounded walk, глубина шаблона = глубина обхода",
+        "01/x.txt=>z-01.txt" in flat(chunks[4])
+        and "deep" not in chunks[1]
+        and "переименовано: 1" in chunks[5], chunks[4][:400]))
 
     sys.exit(0 if all(results) else 1)
 

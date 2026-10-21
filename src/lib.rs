@@ -7,9 +7,9 @@ use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
 
-pub fn scan_paths(recursive: bool) -> io::Result<Vec<String>> {
-    if recursive {
-        walk_tree()
+pub fn scan_paths(recursive: bool, depth: usize) -> io::Result<Vec<String>> {
+    if recursive && depth > 1 {
+        walk_from(Path::new("."), depth)
     } else {
         top_level_names()
     }
@@ -25,8 +25,10 @@ fn top_level_names() -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn walk_tree() -> io::Result<Vec<String>> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> io::Result<()> {
+fn walk_from(root: &Path, depth: usize) -> io::Result<Vec<String>> {
+    // глубина обхода равна глубине шаблона: матч требует точного совпадения
+    // компонент, глубже паттерну нечего находить — туда и не идём
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>, remaining: usize) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let Ok(name) = entry.file_name().into_string() else {
@@ -38,15 +40,15 @@ fn walk_tree() -> io::Result<Vec<String>> {
                 format!("{prefix}/{name}")
             };
             out.push(path.clone());
-            if entry.file_type()?.is_dir() {
-                walk(&entry.path(), &path, out)?;
+            if remaining > 1 && entry.file_type()?.is_dir() {
+                walk(&entry.path(), &path, out, remaining - 1)?;
             }
         }
         Ok(())
     }
 
     let mut paths = Vec::new();
-    walk(Path::new("."), "", &mut paths)?;
+    walk(root, "", &mut paths, depth)?;
     Ok(paths)
 }
 
@@ -534,6 +536,20 @@ mod tests {
 
     fn exists_among<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
         move |path| names.contains(&path)
+    }
+
+    #[test]
+    fn walk_is_bounded_by_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
+        fs::write(dir.path().join("a/b/c/deep.txt"), b"").unwrap();
+
+        let two = walk_from(dir.path(), 2).unwrap();
+        assert!(two.contains(&"a/b".to_string()));
+        assert!(two.iter().all(|p| p.split('/').count() <= 2));
+
+        let four = walk_from(dir.path(), 4).unwrap();
+        assert!(four.contains(&"a/b/c/deep.txt".to_string()));
     }
 
     #[test]

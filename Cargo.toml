@@ -1,0 +1,11 @@
+[package]
+name = "mvr"
+version = "0.1.0"
+edition = "2021"
+description = "пакетное переименование файлов в текущем каталоге по regex"
+
+[dependencies]
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -10,7 +10,6 @@ categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 regex = "1"
-libc = "0.2"
 ratatui = "0.29"
 
 [dev-dependencies]

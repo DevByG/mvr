@@ -1,7 +1,7 @@
 mod tui;
 
 use std::env;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -83,19 +83,20 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
         }
     };
 
+    let matched = match_paths(&paths, &matchers);
+    if matched.is_empty() {
+        println!("nothing found");
+        return ExitCode::from(1);
+    }
+
     let exists = |path: &str| Path::new(path).exists();
-    let renames = match plan(&paths, &matchers, &parse_replacement(pattern_arg), &exists) {
+    let renames = match plan(&matched, &parse_replacement(pattern_arg), &exists) {
         Ok(renames) => renames,
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::from(1);
         }
     };
-
-    if match_paths(&paths, &matchers).is_empty() {
-        println!("nothing found");
-        return ExitCode::from(1);
-    }
     if renames.is_empty() {
         println!("nothing to change");
         return ExitCode::SUCCESS;
@@ -133,39 +134,25 @@ fn confirm() -> io::Result<bool> {
     Ok(answer.trim().eq_ignore_ascii_case("y"))
 }
 
-struct RestoreTermios(libc::termios);
-
-impl Drop for RestoreTermios {
-    fn drop(&mut self) {
-        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0) };
-    }
-}
-
 fn read_key() -> io::Result<bool> {
-    unsafe {
-        let mut original: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(libc::STDIN_FILENO, &mut original) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let _restore = RestoreTermios(original);
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-        let mut raw = original;
-        // ISIG off: Ctrl-C arrives as a byte, not a signal - a signal
-        // mid-raw-mode would leave the terminal without echo; the byte just cancels.
-        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
-        // VMIN/VTIME slots hold foreign values in canonical mode;
-        // without setting them explicitly read may return 0 bytes immediately
-        raw.c_cc[libc::VMIN] = 1;
-        raw.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
-            return Err(io::Error::last_os_error());
+    // cfmakeraw semantics: Ctrl-C arrives as a key, not a signal, and the
+    // terminal is restored on every path out of this function
+    ratatui::crossterm::terminal::enable_raw_mode()?;
+    let answer = (|| -> io::Result<bool> {
+        loop {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    return Ok(matches!(key.code, KeyCode::Char('y' | 'Y')));
+                }
+                _ => continue,
+            }
         }
-
-        let mut key = [0u8];
-        let pressed = io::stdin().read(&mut key)?;
-        println!();
-        Ok(pressed == 1 && key[0].eq_ignore_ascii_case(&b'y'))
-    }
+    })();
+    ratatui::crossterm::terminal::disable_raw_mode()?;
+    println!();
+    answer
 }
 
 fn finish(dir: &Path, renames: &[mvr::Rename]) -> ExitCode {

@@ -1,16 +1,16 @@
-use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::{DefaultTerminal, Frame};
 
 use mvr::{
@@ -103,11 +103,13 @@ struct App {
     inputs: [Input; 2],
     focus: usize,
     case_insensitive: bool,
-    scroll: u16,
+    scroll: usize,
     paths: Vec<String>,
     summary: Option<String>,
     case_button: Option<Rect>,
     input_rects: [Option<Rect>; 2],
+    scrollbar: Option<Rect>,
+    dragging: bool,
 }
 
 struct View {
@@ -128,13 +130,13 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         summary: None,
         case_button: None,
         input_rects: [None, None],
+        scrollbar: None,
+        dragging: false,
     };
 
     let mut scanner = Scanner::new(Path::new("."));
     let mut scan_key = String::new();
     let mut force_scan = false;
-    let mut view: Option<View> = None;
-    let mut rebuild = true;
     loop {
         // the walk only enters directories matched by earlier pattern
         // segments and caches every directory it has read: pattern edits
@@ -149,34 +151,16 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
             scan_key = key;
             force_scan = false;
             app.paths = scanned;
-            rebuild = true;
         }
-        if rebuild || view.is_none() {
-            view = Some(build_view(&app));
-            rebuild = false;
-        }
-        terminal.draw(|frame| render(frame, &mut app, view.as_ref().unwrap()))?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
+        let view = build_view(&app);
+        terminal.draw(|frame| render(frame, &mut app, &view))?;
+
+        // no wakeups of its own: the loop redraws per event only,
+        // the read blocks until a key, mouse move or terminal resize
         let event = event::read()?;
         if let Event::Mouse(mouse) = &event {
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                let click = Position {
-                    x: mouse.column,
-                    y: mouse.row,
-                };
-                if app.case_button.is_some_and(|rect| rect.contains(click)) {
-                    app.case_insensitive = !app.case_insensitive;
-                    app.scroll = 0;
-                } else if app.input_rects[0].is_some_and(|rect| rect.contains(click)) {
-                    app.focus = 0;
-                } else if app.input_rects[1].is_some_and(|rect| rect.contains(click)) {
-                    app.focus = 1;
-                }
-            }
-            rebuild = true;
+            handle_mouse(&mut app, mouse, &view);
             continue;
         }
         let Event::Key(key) = event else {
@@ -215,7 +199,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 false
             }
             KeyCode::Enter => {
-                if let Some(renames) = &view.as_ref().unwrap().applyable {
+                if let Some(renames) = &view.applyable {
                     let outcome = apply(Path::new("."), renames);
                     app.summary = Some(summarize(&outcome, renames.len()));
                     force_scan = true;
@@ -271,9 +255,56 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         if handled_edit {
             app.scroll = 0;
         }
-        rebuild = true;
     }
     Ok(())
+}
+
+fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
+    let position = Position {
+        x: mouse.column,
+        y: mouse.row,
+    };
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if app.case_button.is_some_and(|rect| rect.contains(position)) {
+                app.case_insensitive = !app.case_insensitive;
+                app.scroll = 0;
+            } else if app.scrollbar.is_some_and(|rect| rect.contains(position)) {
+                app.dragging = true;
+                if let Some(bar) = app.scrollbar {
+                    drag_scroll(app, mouse.row, bar, view);
+                }
+            } else if app.input_rects[0].is_some_and(|rect| rect.contains(position)) {
+                app.focus = 0;
+            } else if app.input_rects[1].is_some_and(|rect| rect.contains(position)) {
+                app.focus = 1;
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.dragging {
+                if let Some(bar) = app.scrollbar {
+                    drag_scroll(app, mouse.row, bar, view);
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.dragging = false,
+        MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_sub(3),
+        MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_add(3),
+        _ => {}
+    }
+}
+
+fn drag_scroll(app: &mut App, row: u16, bar: Rect, view: &View) {
+    let visible = bar.height as usize;
+    let content = view.body.len();
+    if content <= visible {
+        app.scroll = 0;
+        return;
+    }
+    let max = content - visible;
+    let span = (bar.height as usize - 1).max(1);
+    let offset = row.saturating_sub(bar.y) as usize;
+    app.scroll = (offset * max / span).min(max);
 }
 
 fn build_view(app: &App) -> View {
@@ -328,7 +359,7 @@ fn build_view(app: &App) -> View {
 
     let parts = parse_replacement(replacement);
     let exists = |path: &str| Path::new(path).exists();
-    let outcome = plan_outcome(&app.paths, &matchers, &parts, &exists);
+    let outcome = plan_outcome(&matched, &parts, &exists);
     if outcome.renames.is_empty() {
         return View {
             match_count: matched.len(),
@@ -339,12 +370,7 @@ fn build_view(app: &App) -> View {
         };
     }
 
-    let mut target_counts: HashMap<&str, usize> = HashMap::new();
-    for rename in &outcome.renames {
-        *target_counts.entry(rename.to.as_str()).or_default() += 1;
-    }
-    let conflicting =
-        |to: &str| target_counts.get(to).is_some_and(|count| *count > 1) || exists(to);
+    let conflicting = |to: &str| outcome.conflicting.iter().any(|bad| bad == to);
 
     let mut body: Vec<Line<'static>> = outcome
         .renames
@@ -541,13 +567,18 @@ fn render_input(frame: &mut Frame, area: Rect, label: &str, input: &Input, focus
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
-fn render_list(frame: &mut Frame, area: Rect, app: &App, view: &View) {
+fn render_list(frame: &mut Frame, area: Rect, app: &mut App, view: &View) {
+    app.scrollbar = None;
     if view.body.is_empty() {
         return;
     }
-    let visible = area.height as usize;
-    let max_scroll = (view.body.len() - 1) as u16;
-    let scroll = app.scroll.min(max_scroll) as usize;
+    let [content_area, bar_area] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    app.scrollbar = Some(bar_area);
+
+    let visible = content_area.height as usize;
+    let max_scroll = view.body.len().saturating_sub(visible);
+    let scroll = app.scroll.min(max_scroll);
     let mut shown: Vec<Line<'static>> = view.body[scroll..].to_vec();
     let hidden = shown.len().saturating_sub(visible);
     if hidden > 0 {
@@ -555,5 +586,16 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App, view: &View) {
         shown.truncate(keep);
         shown.push(Line::styled(format!(" ... +{hidden} more"), DIM));
     }
-    frame.render_widget(Paragraph::new(shown), area);
+    frame.render_widget(Paragraph::new(shown), content_area);
+
+    if view.body.len() > visible {
+        let mut scrollbar_state = ScrollbarState::new(view.body.len())
+            .position(scroll)
+            .viewport_content_length(visible);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            bar_area,
+            &mut scrollbar_state,
+        );
+    }
 }

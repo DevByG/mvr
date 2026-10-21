@@ -253,3 +253,15 @@ fn no_args_without_tty_prints_usage() {
     assert_eq!(code, Some(2), "stdout: {stdout}");
     assert!(stderr.contains("usage"), "stderr: {stderr}");
 }
+
+#[test]
+fn no_match_reported_before_pattern_group_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "keep.txt");
+
+    let (stdout, stderr, code) = run(dir.path(), &[r"^zzz$", "v$2"], "y\n");
+
+    assert_eq!(code, Some(1), "stderr: {stderr}");
+    assert!(stdout.contains("nothing found"), "stdout: {stdout}");
+    assert!(!stderr.contains("$2"), "stderr: {stderr}");
+}

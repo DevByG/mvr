@@ -281,6 +281,31 @@ def main():
     results.append(check("cache: F5 re-reads the tree",
         "files: 3" in chunks[6] and "matches: 2" in chunks[6], chunks[6][:400]))
 
+    k = f"{base}/k"
+    os.makedirs(k)
+    for n in range(1, 31):
+        open(f"{k}/f{n:02d}.txt", "w").close()
+    chunks, clean = drive(k, [
+        (b"f\\d+", 0.4),
+        (RESIZE, 0.5),                       # long list, tail hidden
+        (b"\x1b[<65;10;12M", 0.2),           # wheel down
+        (b"\x1b[<65;10;12M", 0.2),
+        (b"\x1b[<65;10;12M", 0.2),
+        (b"\x1b[<65;10;12M", 0.2),
+        (RESIZE, 0.5),                       # tail visible now
+        (b"\x1b[<0;100;24M", 0.4),           # drag: click the scrollbar bottom
+        (RESIZE, 0.5),
+        (b"\x1b[<0;100;24m", 0.2),           # mouse up
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("wheel: 4 notches scroll 12 lines",
+        "f01.txt" in chunks[1] and "f01.txt" not in flat(chunks[6])
+        and "f13.txt" in flat(chunks[6]) and "f30.txt" not in flat(chunks[6]),
+        chunks[6][:300]))
+    results.append(check("scrollbar: drag jumps to the end",
+        "f30.txt" in flat(chunks[8]) and "f01.txt" not in flat(chunks[8]),
+        chunks[8][:300]))
+
     sys.exit(0 if all(results) else 1)
 
 

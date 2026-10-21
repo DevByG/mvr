@@ -117,7 +117,7 @@ pub struct MatchedFile {
     pub groups: Vec<Option<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlanError {
     InvalidRegex {
         segment: usize,
@@ -147,6 +147,18 @@ pub enum PlanError {
     EmptyTarget,
 }
 
+impl PlanError {
+    pub fn target(&self) -> Option<&str> {
+        match self {
+            PlanError::SameTarget { target, .. }
+            | PlanError::TakenTarget { target }
+            | PlanError::ChainedTarget { target }
+            | PlanError::TargetInsideSource { target, .. } => Some(target),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -155,7 +167,7 @@ impl fmt::Display for PlanError {
             }
             PlanError::EmptyPatternSegment { segment } => write!(
                 f,
-                "empty segment {segment} in REGEX (" //" or a trailing "/")"
+                "empty segment {segment} in REGEX (\"//\" or a trailing \"/\")"
             ),
             PlanError::UnknownGroup { group, available } => write!(
                 f,
@@ -287,36 +299,35 @@ fn expand(parts: &[Part], groups: &[Option<String>], index: usize) -> String {
 pub struct PlanOutcome {
     pub renames: Vec<Rename>,
     pub error: Option<PlanError>,
+    // every target the validation found at fault - the single source of
+    // conflict knowledge for both the CLI error and the TUI coloring
+    pub conflicting: Vec<String>,
 }
 
 pub fn plan(
-    paths: &[String],
-    matchers: &[Regex],
+    matched: &[MatchedFile],
     parts: &[Part],
     exists: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<Rename>, PlanError> {
-    let PlanOutcome { renames, error } = plan_outcome(paths, matchers, parts, exists);
+    let PlanOutcome { renames, error, .. } = plan_outcome(matched, parts, exists);
     error.map_or(Ok(renames), Err)
 }
 
 pub fn plan_outcome(
-    paths: &[String],
-    matchers: &[Regex],
+    matched: &[MatchedFile],
     parts: &[Part],
     exists: &dyn Fn(&str) -> bool,
 ) -> PlanOutcome {
-    let available = 1 + matchers
-        .iter()
-        .map(|matcher| matcher.captures_len() - 1)
-        .sum::<usize>();
+    let available = matched.first().map_or(1, |file| file.groups.len());
     if let Err(err) = validate_groups(parts, available) {
         return PlanOutcome {
             renames: Vec::new(),
             error: Some(err),
+            conflicting: Vec::new(),
         };
     }
 
-    let renames: Vec<Rename> = match_paths(paths, matchers)
+    let renames: Vec<Rename> = matched
         .iter()
         .enumerate()
         .filter_map(|(position, file)| {
@@ -328,15 +339,14 @@ pub fn plan_outcome(
         })
         .collect();
 
-    match validate_targets(&renames, exists) {
-        Ok(()) => PlanOutcome {
-            renames,
-            error: None,
-        },
-        Err(err) => PlanOutcome {
-            renames,
-            error: Some(err),
-        },
+    let errors = validate_targets(&renames, exists);
+    PlanOutcome {
+        error: errors.first().cloned(),
+        conflicting: errors
+            .iter()
+            .filter_map(|err| err.target().map(str::to_string))
+            .collect(),
+        renames,
     }
 }
 
@@ -354,7 +364,7 @@ fn validate_groups(parts: &[Part], available: usize) -> Result<(), PlanError> {
     Ok(())
 }
 
-fn validate_targets(renames: &[Rename], exists: &dyn Fn(&str) -> bool) -> Result<(), PlanError> {
+fn validate_targets(renames: &[Rename], exists: &dyn Fn(&str) -> bool) -> Vec<PlanError> {
     let mut by_target: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for rename in renames {
         by_target
@@ -363,40 +373,50 @@ fn validate_targets(renames: &[Rename], exists: &dyn Fn(&str) -> bool) -> Result
             .push(rename.from.as_str());
     }
 
+    let mut errors = Vec::new();
     for (target, sources) in by_target {
         if target.is_empty() {
-            return Err(PlanError::EmptyTarget);
-        }
-        if sources.len() > 1 {
-            return Err(PlanError::SameTarget {
+            errors.push(PlanError::EmptyTarget);
+        } else if sources.len() > 1 {
+            errors.push(PlanError::SameTarget {
                 target: target.into(),
                 sources: sources.into_iter().map(String::from).collect(),
             });
-        }
-        let inside_source = renames
-            .iter()
-            .find(|rename| target.starts_with(&format!("{}/", rename.from)))
-            .map(|rename| rename.from.as_str());
-        if let Some(from) = inside_source {
-            return Err(PlanError::TargetInsideSource {
-                from: from.into(),
-                target: target.into(),
-            });
-        }
-        if exists(target) {
-            let chained = renames.iter().any(|rename| rename.from == target);
-            return Err(if chained {
-                PlanError::ChainedTarget {
+        } else if target.contains('/') {
+            // only a path-like target can live inside a source; the flat
+            // common case skips the prefix scan entirely
+            if let Some(from) = renames
+                .iter()
+                .find(|rename| target.starts_with(&format!("{}/", rename.from)))
+                .map(|rename| rename.from.as_str())
+            {
+                errors.push(PlanError::TargetInsideSource {
+                    from: from.into(),
                     target: target.into(),
-                }
-            } else {
-                PlanError::TakenTarget {
-                    target: target.into(),
-                }
-            });
+                });
+                continue;
+            }
+            if exists(target) {
+                errors.push(taken_or_chained(target, renames));
+            }
+        } else if exists(target) {
+            errors.push(taken_or_chained(target, renames));
         }
     }
-    Ok(())
+    errors
+}
+
+fn taken_or_chained(target: &str, renames: &[Rename]) -> PlanError {
+    let chained = renames.iter().any(|rename| rename.from == target);
+    if chained {
+        PlanError::ChainedTarget {
+            target: target.into(),
+        }
+    } else {
+        PlanError::TakenTarget {
+            target: target.into(),
+        }
+    }
 }
 
 pub struct ApplyOutcome {
@@ -584,6 +604,11 @@ mod tests {
         assert_eq!(matched[0].path, "img");
     }
 
+    fn matched_of(paths: &[&str], pattern: &str) -> Vec<MatchedFile> {
+        let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+        match_paths(&owned, &matchers_of(pattern))
+    }
+
     fn exists_among<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
         move |path| names.contains(&path)
     }
@@ -716,10 +741,8 @@ mod tests {
 
     #[test]
     fn plan_numbers_matches_in_path_order() {
-        let paths = vec!["b/2.txt".to_string(), "a/1.txt".to_string()];
         let renames = plan(
-            &paths,
-            &matchers_of(r"(\w+)/\d\.txt"),
+            &matched_of(&["b/2.txt", "a/1.txt"], r"(\w+)/\d\.txt"),
             &parts_of("x$i"),
             &exists_among(&[]),
         )
@@ -736,8 +759,7 @@ mod tests {
     #[test]
     fn plan_skips_unchanged_paths() {
         let renames = plan(
-            &["keep".to_string()],
-            &matchers_of("keep"),
+            &matched_of(&["keep"], "keep"),
             &parts_of("$0"),
             &exists_among(&[]),
         )
@@ -748,8 +770,7 @@ mod tests {
     #[test]
     fn plan_outcome_keeps_renames_on_validation_error() {
         let outcome = plan_outcome(
-            &["a.txt".to_string(), "b.txt".to_string()],
-            &matchers_of(r"^(a|b)\.txt$"),
+            &matched_of(&["a.txt", "b.txt"], r"^(a|b)\.txt$"),
             &parts_of("same"),
             &exists_among(&[]),
         );
@@ -758,10 +779,29 @@ mod tests {
     }
 
     #[test]
+    fn plan_outcome_collects_all_conflicting_targets() {
+        let mut matched = matched_of(&["a.txt", "b.txt", "c.txt"], r"^(a|b|c)\.txt$");
+        // третья цель - занятое имя на диске, первые две - дубликаты
+        matched.truncate(2);
+        let outcome = plan_outcome(
+            &matched_of(&["a.txt", "b.txt"], r"^(a|b)\.txt$"),
+            &parts_of("same"),
+            &exists_among(&[]),
+        );
+        assert_eq!(outcome.conflicting, vec!["same".to_string()]);
+
+        let taken = plan_outcome(
+            &matched_of(&["a.txt"], r"^a\.txt$"),
+            &parts_of("taken"),
+            &exists_among(&["a.txt", "taken"]),
+        );
+        assert_eq!(taken.conflicting, vec!["taken".to_string()]);
+    }
+
+    #[test]
     fn plan_rejects_unknown_group() {
         let err = plan(
-            &["x".to_string()],
-            &matchers_of("x"),
+            &matched_of(&["x"], "x"),
             &parts_of("$1"),
             &exists_among(&[]),
         )
@@ -778,8 +818,7 @@ mod tests {
     #[test]
     fn plan_rejects_same_target_from_two_files() {
         let err = plan(
-            &["a.txt".to_string(), "b.txt".to_string()],
-            &matchers_of(r"^(a|b)\.txt$"),
+            &matched_of(&["a.txt", "b.txt"], r"^(a|b)\.txt$"),
             &parts_of("same"),
             &exists_among(&[]),
         )
@@ -790,8 +829,7 @@ mod tests {
     #[test]
     fn plan_rejects_target_taken_by_bystander() {
         let err = plan(
-            &["a".to_string(), "b".to_string()],
-            &matchers_of("^a$"),
+            &matched_of(&["a", "b"], "^a$"),
             &parts_of("b"),
             &exists_among(&["a", "b"]),
         )
@@ -802,8 +840,7 @@ mod tests {
     #[test]
     fn plan_rejects_chained_target() {
         let err = plan(
-            &["a".to_string(), "za".to_string()],
-            &matchers_of("."),
+            &matched_of(&["a", "za"], "."),
             &parts_of("z$0"),
             &exists_among(&["a", "za"]),
         )
@@ -814,8 +851,7 @@ mod tests {
     #[test]
     fn plan_rejects_moving_directory_into_itself() {
         let err = plan(
-            &["d/x".to_string()],
-            &matchers_of(r"d/x"),
+            &matched_of(&["d/x"], r"d/x"),
             &parts_of("d/x/y"),
             &exists_among(&[]),
         )
@@ -826,8 +862,7 @@ mod tests {
     #[test]
     fn plan_allows_dots_and_folder_targets() {
         let renames = plan(
-            &["01 x.mp3".to_string()],
-            &matchers_of(r"^(\d+) x\.mp3$"),
+            &matched_of(&["01 x.mp3"], r"^(\d+) x\.mp3$"),
             &parts_of("../sorted/$1/x.mp3"),
             &exists_among(&[]),
         )

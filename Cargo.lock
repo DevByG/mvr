@@ -286,7 +286,6 @@ dependencies = [
 name = "mvr"
 version = "0.1.0"
 dependencies = [
- "libc",
  "ratatui",
  "regex",
  "tempfile",

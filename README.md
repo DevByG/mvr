@@ -32,6 +32,12 @@ $ cargo install --path .
 
 Or grab a prebuilt binary from the [releases] page.
 
+On Arch, a local PKGBUILD is included:
+
+```console
+$ cd packaging && makepkg -si
+```
+
 [releases]: https://github.com/DevByG/mvr/releases
 
 ## Semantics

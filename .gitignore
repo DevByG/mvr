@@ -2,3 +2,7 @@
 .idea/
 __pycache__/
 reports/
+packaging/src/
+packaging/pkg/
+packaging/*.pkg.tar.*
+packaging/mvr-v*

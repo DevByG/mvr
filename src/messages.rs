@@ -65,12 +65,18 @@ pub static RU: Messages = Messages {
 };
 
 pub fn detect() -> &'static Messages {
+    // an empty LC_* variable means "inherit from LANG" in the glibc
+    // convention - it must not shadow a real value further down the chain
     if let Ok(forced) = std::env::var("MVR_LANG") {
-        return lang_of(&forced);
+        if !forced.is_empty() {
+            return lang_of(&forced);
+        }
     }
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
         if let Ok(value) = std::env::var(key) {
-            return lang_of(&value);
+            if !value.is_empty() {
+                return lang_of(&value);
+            }
         }
     }
     &EN

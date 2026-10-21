@@ -7,6 +7,49 @@ use std::path::Path;
 
 use regex::Regex;
 
+pub fn scan_paths(recursive: bool) -> io::Result<Vec<String>> {
+    if recursive {
+        walk_tree()
+    } else {
+        top_level_names()
+    }
+}
+
+fn top_level_names() -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(".")? {
+        if let Ok(name) = entry?.file_name().into_string() {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
+fn walk_tree() -> io::Result<Vec<String>> {
+    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> io::Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            out.push(path.clone());
+            if entry.file_type()?.is_dir() {
+                walk(&entry.path(), &path, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    walk(Path::new("."), "", &mut paths)?;
+    Ok(paths)
+}
+
 #[derive(Debug, Clone)]
 pub struct Rename {
     pub from: String,

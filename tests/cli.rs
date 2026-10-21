@@ -175,8 +175,14 @@ fn recursive_mode_matches_paths_by_segments() {
     );
     assert!(dir.path().join("сезон 01/эпизод 2.mkv").is_file());
     assert!(dir.path().join("сезон 02/эпизод 1.mkv").is_file());
-    assert!(stdout.contains("опустеют и будут удалены: s01, s02"), "stdout: {stdout}");
-    assert!(stdout.contains("удалено пустых каталогов: s01, s02"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("опустеют и будут удалены: s01, s02"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("удалено пустых каталогов: s01, s02"),
+        "stdout: {stdout}"
+    );
     assert!(!dir.path().join("s01").exists());
     assert!(!dir.path().join("s02").exists());
 }

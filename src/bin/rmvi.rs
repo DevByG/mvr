@@ -1,0 +1,443 @@
+use std::io;
+use std::path::Path;
+use std::time::Duration;
+
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{DefaultTerminal, Frame};
+
+use mvr::{
+    apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, scan_paths,
+    ApplyOutcome, Rename,
+};
+
+const DIM: Style = Style::new().fg(Color::DarkGray);
+
+fn main() -> io::Result<()> {
+    let recursive = std::env::args()
+        .skip(1)
+        .any(|arg| arg == "-r" || arg == "--recursive");
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal, recursive);
+    ratatui::restore();
+    result
+}
+
+struct Input {
+    text: String,
+    cursor: usize,
+}
+
+impl Input {
+    fn new() -> Self {
+        Input {
+            text: String::new(),
+            cursor: 0,
+        }
+    }
+
+    fn insert(&mut self, c: char) {
+        self.text.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            let start = prev_boundary(&self.text, self.cursor);
+            self.text.drain(start..self.cursor);
+            self.cursor = start;
+        }
+    }
+
+    fn left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor = prev_boundary(&self.text, self.cursor);
+        }
+    }
+
+    fn right(&mut self) {
+        if self.cursor < self.text.len() {
+            self.cursor = next_boundary(&self.text, self.cursor);
+        }
+    }
+
+    fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn end(&mut self) {
+        self.cursor = self.text.len();
+    }
+}
+
+fn prev_boundary(text: &str, index: usize) -> usize {
+    let mut i = index - 1;
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn next_boundary(text: &str, index: usize) -> usize {
+    let mut i = index + 1;
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+struct App {
+    inputs: [Input; 2],
+    focus: usize,
+    recursive: bool,
+    scroll: u16,
+    paths: Vec<String>,
+    scan_pending: bool,
+    summary: Option<String>,
+}
+
+struct View {
+    match_count: usize,
+    body: Vec<Line<'static>>,
+    status: Option<String>,
+    error: Option<String>,
+    applyable: Option<Vec<Rename>>,
+}
+
+fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
+    let mut app = App {
+        inputs: [Input::new(), Input::new()],
+        focus: 0,
+        recursive,
+        scroll: 0,
+        paths: Vec::new(),
+        scan_pending: true,
+        summary: None,
+    };
+
+    loop {
+        if app.scan_pending {
+            app.paths = scan_paths(app.recursive)?;
+            app.scan_pending = false;
+        }
+        let view = build_view(&app);
+        terminal.draw(|frame| render(frame, &app, &view))?;
+
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        if app.summary.is_some() {
+            break;
+        }
+
+        let handled_edit = match key.code {
+            KeyCode::Esc => return Ok(()),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+            KeyCode::Tab => {
+                app.focus = 1 - app.focus;
+                false
+            }
+            KeyCode::BackTab => {
+                app.focus = 1 - app.focus;
+                false
+            }
+            KeyCode::Enter if app.focus == 0 => {
+                app.focus = 1;
+                false
+            }
+            KeyCode::Enter => {
+                if let Some(renames) = &view.applyable {
+                    let outcome = apply(Path::new("."), renames);
+                    app.summary = Some(summarize(&outcome, renames.len()));
+                    app.scan_pending = true;
+                }
+                false
+            }
+            KeyCode::Up => {
+                app.scroll = app.scroll.saturating_sub(1);
+                false
+            }
+            KeyCode::Down => {
+                app.scroll = app.scroll.saturating_add(1);
+                false
+            }
+            KeyCode::PageUp => {
+                app.scroll = app.scroll.saturating_sub(10);
+                false
+            }
+            KeyCode::PageDown => {
+                app.scroll = app.scroll.saturating_add(10);
+                false
+            }
+            KeyCode::Backspace => {
+                app.inputs[app.focus].backspace();
+                true
+            }
+            KeyCode::Left => {
+                app.inputs[app.focus].left();
+                false
+            }
+            KeyCode::Right => {
+                app.inputs[app.focus].right();
+                false
+            }
+            KeyCode::Home => {
+                app.inputs[app.focus].home();
+                false
+            }
+            KeyCode::End => {
+                app.inputs[app.focus].end();
+                false
+            }
+            KeyCode::Char(c) => {
+                app.inputs[app.focus].insert(c);
+                true
+            }
+            _ => false,
+        };
+        if handled_edit {
+            app.scan_pending = true;
+            app.scroll = 0;
+        }
+    }
+    Ok(())
+}
+
+fn build_view(app: &App) -> View {
+    let empty = View {
+        match_count: 0,
+        body: Vec::new(),
+        status: None,
+        error: None,
+        applyable: None,
+    };
+
+    let regex_text = app.inputs[0].text.as_str();
+    if regex_text.trim().is_empty() {
+        return View {
+            body: vec![Line::styled(
+                " введите regex — совпадения появятся здесь",
+                DIM,
+            )],
+            ..empty
+        };
+    }
+    let matchers = match compile_matchers(regex_text) {
+        Ok(matchers) => matchers,
+        Err(err) => {
+            return View {
+                error: Some(format!("regex: {err}")),
+                ..empty
+            }
+        }
+    };
+
+    let matched = match_paths(&app.paths, &matchers);
+    let froms: Vec<Line<'static>> = matched
+        .iter()
+        .map(|file| Line::styled(file.path.clone(), DIM))
+        .collect();
+    if matched.is_empty() {
+        return View {
+            status: Some("ничего не найдено".into()),
+            ..empty
+        };
+    }
+
+    let replacement = app.inputs[1].text.as_str();
+    if replacement.is_empty() {
+        return View {
+            match_count: matched.len(),
+            body: froms,
+            ..empty
+        };
+    }
+
+    let parts = parse_replacement(replacement);
+    let exists = |path: &str| Path::new(path).exists();
+    match plan(&app.paths, &matchers, &parts, &exists) {
+        Ok(renames) if renames.is_empty() => View {
+            match_count: matched.len(),
+            body: froms,
+            status: Some("изменений нет".into()),
+            ..empty
+        },
+        Ok(renames) => {
+            let prunes = planned_prunes(&app.paths, &renames);
+            let mut body: Vec<Line<'static>> = renames
+                .iter()
+                .map(|rename| {
+                    Line::from(vec![
+                        Span::from(rename.from.clone()),
+                        Span::styled(" => ", Style::new().fg(Color::Yellow)),
+                        Span::styled(rename.to.clone(), Style::new().fg(Color::Green)),
+                    ])
+                })
+                .collect();
+            if !prunes.is_empty() {
+                body.push(Line::from(vec![
+                    Span::styled("опустеют и будут удалены: ", Style::new().fg(Color::Yellow)),
+                    Span::from(prunes.join(", ")),
+                ]));
+            }
+            View {
+                match_count: matched.len(),
+                body,
+                status: None,
+                error: None,
+                applyable: Some(renames),
+            }
+        }
+        Err(err) => View {
+            match_count: matched.len(),
+            body: froms,
+            error: Some(err.to_string()),
+            ..empty
+        },
+    }
+}
+
+fn summarize(outcome: &ApplyOutcome, total: usize) -> String {
+    let done = total - outcome.failures.len();
+    let mut text = format!("переименовано: {done}");
+    if !outcome.pruned_dirs.is_empty() {
+        text.push_str(&format!(
+            "; удалено пустых каталогов: {}",
+            outcome.pruned_dirs.join(", ")
+        ));
+    }
+    if !outcome.failures.is_empty() {
+        text.push_str(&format!(
+            "; ошибок: {} (первая: {})",
+            outcome.failures.len(),
+            outcome.failures[0].1
+        ));
+    }
+    text
+}
+
+fn render(frame: &mut Frame, app: &App, view: &View) {
+    let status_height =
+        u16::from(app.summary.is_some() || view.status.is_some() || view.error.is_some());
+    let [title_area, inputs_area, list_area, status_area, help_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(7),
+        Constraint::Min(3),
+        Constraint::Length(status_height),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+
+    let title = Line::from(vec![
+        Span::styled("rmvi", Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            if app.recursive { " [-r]" } else { "" },
+            Style::new().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!(
+                "  ·  файлов: {}  ·  матчей: {}",
+                app.paths.len(),
+                view.match_count
+            ),
+            DIM,
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(title), title_area);
+
+    let [regex_area, pattern_area, _gap] =
+        Layout::vertical([Constraint::Length(3); 3]).areas(inputs_area);
+    render_input(frame, regex_area, " regex ", &app.inputs[0], app.focus == 0);
+    render_input(
+        frame,
+        pattern_area,
+        " шаблон ",
+        &app.inputs[1],
+        app.focus == 1,
+    );
+
+    render_list(frame, list_area, app, view);
+
+    if let Some(summary) = &app.summary {
+        frame.render_widget(
+            Paragraph::new(Span::styled(summary, Style::new().fg(Color::Green))),
+            status_area,
+        );
+    } else if let Some(error) = &view.error {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("ошибка: {error}"),
+                Style::new().fg(Color::Red),
+            )),
+            status_area,
+        );
+    } else if let Some(status) = &view.status {
+        frame.render_widget(
+            Paragraph::new(Span::styled(status, Style::new().fg(Color::Yellow))),
+            status_area,
+        );
+    }
+
+    let help = if app.summary.is_some() {
+        " любая клавиша — выход"
+    } else {
+        " Tab поле · Enter далее/применить · ↑↓ PgUp/PgDn прокрутка · Esc выход"
+    };
+    frame.render_widget(Paragraph::new(help).style(DIM), help_area);
+}
+
+fn render_input(frame: &mut Frame, area: Rect, label: &str, input: &Input, focused: bool) {
+    let border = if focused {
+        Style::new().fg(Color::Yellow)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(border)
+        .title(Span::styled(label, border));
+
+    let before = input.text[..input.cursor].to_string();
+    let at = input.text[input.cursor..].chars().next();
+    let after = match at {
+        Some(c) => input.text[input.cursor + c.len_utf8()..].to_string(),
+        None => String::new(),
+    };
+    let cursor_style = Style::new().add_modifier(Modifier::UNDERLINED);
+    let line = Line::from(vec![
+        Span::from(before),
+        match at {
+            Some(c) => Span::styled(c.to_string(), cursor_style),
+            None => Span::styled(" ", cursor_style),
+        },
+        Span::from(after),
+    ]);
+    frame.render_widget(Paragraph::new(line).block(block), area);
+}
+
+fn render_list(frame: &mut Frame, area: Rect, app: &App, view: &View) {
+    if view.body.is_empty() {
+        return;
+    }
+    let visible = area.height as usize;
+    let max_scroll = (view.body.len() - 1) as u16;
+    let scroll = app.scroll.min(max_scroll) as usize;
+    let mut shown: Vec<Line<'static>> = view.body[scroll..].to_vec();
+    let hidden = shown.len().saturating_sub(visible);
+    if hidden > 0 {
+        let keep = visible.saturating_sub(1);
+        shown.truncate(keep);
+        shown.push(Line::styled(format!(" … +{hidden} ещё"), DIM));
+    }
+    frame.render_widget(Paragraph::new(shown), area);
+}

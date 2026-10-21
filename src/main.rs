@@ -1,10 +1,11 @@
 use std::env;
-use std::fs;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use mvr::{apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes};
+use mvr::{
+    apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, scan_paths,
+};
 
 const USAGE: &str = "\
 mvr — пакетное переименование файлов в текущем каталоге
@@ -66,12 +67,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let paths = if recursive {
-        walk_tree()
-    } else {
-        current_dir_names()
-    };
-    let paths = match paths {
+    let paths = match scan_paths(recursive) {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("не могу прочитать текущий каталог: {err}");
@@ -116,41 +112,6 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-fn current_dir_names() -> io::Result<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(".")? {
-        if let Ok(name) = entry?.file_name().into_string() {
-            names.push(name);
-        }
-    }
-    Ok(names)
-}
-
-fn walk_tree() -> io::Result<Vec<String>> {
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) -> io::Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            let path = if prefix.is_empty() {
-                name.clone()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            out.push(path.clone());
-            if entry.file_type()?.is_dir() {
-                walk(&entry.path(), &path, out)?;
-            }
-        }
-        Ok(())
-    }
-
-    let mut paths = Vec::new();
-    walk(Path::new("."), "", &mut paths)?;
-    Ok(paths)
 }
 
 fn confirm() -> io::Result<bool> {

@@ -93,6 +93,7 @@ struct App {
     inputs: [Input; 2],
     focus: usize,
     recursive: bool,
+    case_insensitive: bool,
     scroll: u16,
     paths: Vec<String>,
     scan_pending: bool,
@@ -112,6 +113,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         inputs: [Input::new(), Input::new()],
         focus: 0,
         recursive,
+        case_insensitive: true,
         scroll: 0,
         paths: Vec::new(),
         scan_pending: true,
@@ -143,6 +145,11 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         let handled_edit = match key.code {
             KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.case_insensitive = !app.case_insensitive;
+                app.scroll = 0;
+                false
+            }
             KeyCode::Tab => {
                 app.focus = 1 - app.focus;
                 false
@@ -232,7 +239,7 @@ fn build_view(app: &App) -> View {
             ..empty
         };
     }
-    let matchers = match compile_matchers(regex_text) {
+    let matchers = match compile_matchers(regex_text, app.case_insensitive) {
         Ok(matchers) => matchers,
         Err(err) => {
             return View {
@@ -352,6 +359,14 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
             ),
             DIM,
         ),
+        Span::styled(
+            if app.case_insensitive {
+                "  ·  регистр: без учёта"
+            } else {
+                "  ·  регистр: с учётом"
+            },
+            DIM,
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), title_area);
 
@@ -395,7 +410,7 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
     let help = if app.summary.is_some() {
         " любая клавиша — выход"
     } else {
-        " Tab поле · Enter далее/применить · ↑↓ PgUp/PgDn прокрутка · Esc выход"
+        " Tab поле · Enter далее/применить · Ctrl+T регистр · ↑↓ PgUp/PgDn прокрутка · Esc выход"
     };
     frame.render_widget(Paragraph::new(help).style(DIM), help_area);
 }

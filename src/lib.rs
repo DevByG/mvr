@@ -5,7 +5,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 pub fn scan_paths(recursive: bool) -> io::Result<Vec<String>> {
     if recursive {
@@ -172,7 +172,7 @@ pub fn parse_replacement(pattern: &str) -> Vec<Part> {
     parts
 }
 
-pub fn compile_matchers(pattern: &str) -> Result<Vec<Regex>, PlanError> {
+pub fn compile_matchers(pattern: &str, case_insensitive: bool) -> Result<Vec<Regex>, PlanError> {
     pattern
         .split('/')
         .enumerate()
@@ -180,10 +180,13 @@ pub fn compile_matchers(pattern: &str) -> Result<Vec<Regex>, PlanError> {
             if source.is_empty() {
                 Err(PlanError::EmptyPatternSegment { segment })
             } else {
-                Regex::new(source).map_err(|err| PlanError::InvalidRegex {
-                    segment,
-                    error: err.to_string(),
-                })
+                RegexBuilder::new(source)
+                    .case_insensitive(case_insensitive)
+                    .build()
+                    .map_err(|err| PlanError::InvalidRegex {
+                        segment,
+                        error: err.to_string(),
+                    })
             }
         })
         .collect()
@@ -483,7 +486,22 @@ mod tests {
     }
 
     fn matchers_of(pattern: &str) -> Vec<Regex> {
-        compile_matchers(pattern).unwrap()
+        compile_matchers(pattern, true).unwrap()
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_by_default() {
+        let matched = match_paths(&["Img_1.JPG".into()], &matchers_of(r"img_\d\.jpg"));
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].path, "Img_1.JPG");
+    }
+
+    #[test]
+    fn inline_flag_restores_case_sensitivity() {
+        let strict = compile_matchers(r"(?-i)img", true).unwrap();
+        let matched = match_paths(&["img".into(), "IMG".into()], &strict);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].path, "img");
     }
 
     fn exists_among<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
@@ -535,11 +553,11 @@ mod tests {
     #[test]
     fn matchers_reject_empty_segment() {
         assert!(matches!(
-            compile_matchers("a//b").unwrap_err(),
+            compile_matchers("a//b", true).unwrap_err(),
             PlanError::EmptyPatternSegment { .. }
         ));
         assert!(matches!(
-            compile_matchers("a/").unwrap_err(),
+            compile_matchers("a/", true).unwrap_err(),
             PlanError::EmptyPatternSegment { .. }
         ));
     }

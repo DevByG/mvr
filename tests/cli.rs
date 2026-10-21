@@ -213,3 +213,38 @@ fn recursive_single_segment_pattern_stays_on_top_level() {
     assert_eq!(stdout.matches("=>").count(), 1, "stdout: {stdout}");
     assert!(dir.path().join("folder-01/01/01.mp3").is_file());
 }
+
+#[test]
+fn matching_is_case_insensitive_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "Photo_1.jpg");
+
+    let (stdout, stderr, code) = run(dir.path(), &[r"photo_(\d+)\.jpg", "foto_$1.jpg"], "y\n");
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("Photo_1.jpg => foto_1.jpg"),
+        "stdout: {stdout}"
+    );
+    assert_eq!(names(dir.path()), vec!["foto_1.jpg"]);
+}
+
+#[test]
+fn inline_flag_restores_case_sensitivity() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "Photo_1.jpg");
+    touch(dir.path(), "photo_2.jpg");
+
+    let (stdout, stderr, code) = run(
+        dir.path(),
+        &[r"(?-i)^photo_(\d+)\.jpg$", "lo-$1.jpg"],
+        "y\n",
+    );
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("photo_2.jpg => lo-2.jpg"),
+        "stdout: {stdout}"
+    );
+    assert_eq!(names(dir.path()), vec!["Photo_1.jpg", "lo-2.jpg"]);
+}

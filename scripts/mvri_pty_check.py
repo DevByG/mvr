@@ -99,13 +99,14 @@ def main():
     results = []
     base = "/tmp/mvri-pty"
     os.system(f"rm -rf {base}")
-    a, b, c = f"{base}/a", f"{base}/b", f"{base}/c"
-    for d in (a, b, c):
-        os.makedirs(d)
+    a, b, c, d = f"{base}/a", f"{base}/b", f"{base}/c", f"{base}/d"
+    for dir_ in (a, b, c, d):
+        os.makedirs(dir_)
     for n in (1, 2):
         open(f"{a}/source 0{n} junk.mkv", "w").close()
     open(f"{b}/source 01 junk.mkv", "w").close()
     open(f"{c}/x.txt", "w").close()
+    open(f"{d}/Mixed.TXT", "w").close()
 
     chunks, clean = drive(a, [
         (b"source (\\d+) junk\\.mkv", 0.4),
@@ -149,6 +150,17 @@ def main():
     results.append(check("битый regex: чистый выход", clean))
     results.append(check("битый regex: ошибка на экране",
         "некорректный regex" in chunks[1], chunks[1][:300]))
+
+    chunks, clean = drive(d, [
+        (b"mixed\\.txt", 0.4),
+        (RESIZE, 0.5),
+        (b"\x14", 0.3),          # Ctrl+T: регистр с учётом
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("регистр: insensitive по умолчанию", "матчей: 1" in chunks[1], chunks[1][:300]))
+    results.append(check("регистр: Ctrl+T включает точный",
+        "матчей: 0" in chunks[3] and "с учётом" in chunks[3], chunks[3][:300]))
 
     sys.exit(0 if all(results) else 1)
 

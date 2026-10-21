@@ -104,6 +104,7 @@ struct App {
     scan_pending: bool,
     summary: Option<String>,
     case_button: Option<Rect>,
+    input_rects: [Option<Rect>; 2],
 }
 
 struct View {
@@ -125,6 +126,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         scan_pending: true,
         summary: None,
         case_button: None,
+        input_rects: [None, None],
     };
 
     loop {
@@ -148,6 +150,10 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
                 if app.case_button.is_some_and(|rect| rect.contains(click)) {
                     app.case_insensitive = !app.case_insensitive;
                     app.scroll = 0;
+                } else if app.input_rects[0].is_some_and(|rect| rect.contains(click)) {
+                    app.focus = 0;
+                } else if app.input_rects[1].is_some_and(|rect| rect.contains(click)) {
+                    app.focus = 1;
                 }
             }
             continue;
@@ -408,6 +414,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     render_input(frame, regex_area, " regex ", &app.inputs[0], app.focus == 0);
     render_case_button(frame, button_area, app);
     app.case_button = Some(button_area);
+    app.input_rects = [Some(regex_area), Some(pattern_area)];
     render_input(
         frame,
         pattern_area,

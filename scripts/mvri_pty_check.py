@@ -185,6 +185,17 @@ def main():
     results.append(check("подсказка: путь в regex без -r",
         "mvri -r" in chunks[1], chunks[1][:300]))
 
+    chunks, clean = drive(e, [
+        (b"\x1b[<0;11;3M", 0.3),    # клик по полю regex (фокус и так там)
+        (b"ab", 0.3),
+        (b"\x1b[<0;11;6M", 0.3),    # клик по полю шаблон
+        (b"xy", 0.3),
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("мышь: клик переключает поле",
+        "│ab" in chunks[4] and "│xy" in chunks[4], chunks[4][:500]))
+
     sys.exit(0 if all(results) else 1)
 
 

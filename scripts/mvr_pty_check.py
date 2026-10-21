@@ -288,23 +288,32 @@ def main():
     chunks, clean = drive(k, [
         (b"f\\d+", 0.4),
         (RESIZE, 0.5),                       # long list, tail hidden
-        (b"\x1b[<65;10;12M", 0.2),           # wheel down
+        (b"\x1b[<65;10;12M", 0.2),           # wheel down x4 = 12 lines
         (b"\x1b[<65;10;12M", 0.2),
         (b"\x1b[<65;10;12M", 0.2),
         (b"\x1b[<65;10;12M", 0.2),
-        (RESIZE, 0.5),                       # tail visible now
+        (RESIZE, 0.5),
         (b"\x1b[<0;100;24M", 0.4),           # drag: click the scrollbar bottom
         (RESIZE, 0.5),
-        (b"\x1b[<0;100;24m", 0.2),           # mouse up
+        (b"\x1b[<64;10;12M", 0.3),           # ONE wheel up: must move at once
+        (RESIZE, 0.5),
+        (b"\x1b[<0;100;10M", 0.4),           # drag: click the scrollbar top
+        (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
     results.append(check("wheel: 4 notches scroll 12 lines",
         "f01.txt" in chunks[1] and "f01.txt" not in flat(chunks[6])
         and "f13.txt" in flat(chunks[6]) and "f30.txt" not in flat(chunks[6]),
         chunks[6][:300]))
-    results.append(check("scrollbar: drag jumps to the end",
+    results.append(check("scrollbar: drag bottom = last line",
         "f30.txt" in flat(chunks[8]) and "f01.txt" not in flat(chunks[8]),
         chunks[8][:300]))
+    results.append(check("no overscroll: one wheel up moves back at once",
+        "f30.txt" not in flat(chunks[10]) and "f13.txt" in flat(chunks[10]),
+        chunks[10][:300]))
+    results.append(check("scrollbar: drag top = first line",
+        "f01.txt" in flat(chunks[12]) and "f30.txt" not in flat(chunks[12]),
+        chunks[12][:300]))
 
     sys.exit(0 if all(results) else 1)
 

@@ -112,6 +112,20 @@ struct App {
     dragging: bool,
 }
 
+impl App {
+    fn visible(&self) -> usize {
+        self.scrollbar.map_or(1, |bar| bar.height as usize)
+    }
+
+    fn max_scroll(&self, view: &View) -> usize {
+        view.body.len().saturating_sub(self.visible())
+    }
+
+    fn set_scroll(&mut self, value: usize, view: &View) {
+        self.scroll = value.min(self.max_scroll(view));
+    }
+}
+
 struct View {
     match_count: usize,
     body: Vec<Line<'static>>,
@@ -207,19 +221,19 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 false
             }
             KeyCode::Up => {
-                app.scroll = app.scroll.saturating_sub(1);
+                app.set_scroll(app.scroll.saturating_sub(1), &view);
                 false
             }
             KeyCode::Down => {
-                app.scroll = app.scroll.saturating_add(1);
+                app.set_scroll(app.scroll.saturating_add(1), &view);
                 false
             }
             KeyCode::PageUp => {
-                app.scroll = app.scroll.saturating_sub(10);
+                app.set_scroll(app.scroll.saturating_sub(10), &view);
                 false
             }
             KeyCode::PageDown => {
-                app.scroll = app.scroll.saturating_add(10);
+                app.set_scroll(app.scroll.saturating_add(10), &view);
                 false
             }
             KeyCode::Backspace => {
@@ -288,8 +302,8 @@ fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => app.dragging = false,
-        MouseEventKind::ScrollUp => app.scroll = app.scroll.saturating_sub(3),
-        MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_add(3),
+        MouseEventKind::ScrollUp => app.set_scroll(app.scroll.saturating_sub(3), view),
+        MouseEventKind::ScrollDown => app.set_scroll(app.scroll.saturating_add(3), view),
         _ => {}
     }
 }
@@ -297,14 +311,20 @@ fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
 fn drag_scroll(app: &mut App, row: u16, bar: Rect, view: &View) {
     let visible = bar.height as usize;
     let content = view.body.len();
-    if content <= visible {
+    let max_scroll = content.saturating_sub(visible);
+    if max_scroll == 0 {
         app.scroll = 0;
         return;
     }
-    let max = content - visible;
-    let span = (bar.height as usize - 1).max(1);
-    let offset = row.saturating_sub(bar.y) as usize;
-    app.scroll = (offset * max / span).min(max);
+    // widget geometry: arrow rows at both ends, track between them;
+    // invert the widget's thumb formula (part_lengths in ratatui),
+    // then our stretch remap, so the thumb lands under the cursor
+    let track_len = (bar.height as usize).saturating_sub(2).max(1);
+    let track_offset = (row.saturating_sub(bar.y + 1) as usize).min(track_len - 1);
+    let max_position = content - 1;
+    let start = track_offset as f64 * (max_position + visible) as f64 / track_len as f64;
+    let scroll = (start * max_scroll as f64 / max_position as f64).round() as usize;
+    app.scroll = scroll.min(max_scroll);
 }
 
 fn build_view(app: &App) -> View {
@@ -578,7 +598,8 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App, view: &View) {
 
     let visible = content_area.height as usize;
     let max_scroll = view.body.len().saturating_sub(visible);
-    let scroll = app.scroll.min(max_scroll);
+    app.scroll = app.scroll.min(max_scroll);
+    let scroll = app.scroll;
     let mut shown: Vec<Line<'static>> = view.body[scroll..].to_vec();
     let hidden = shown.len().saturating_sub(visible);
     if hidden > 0 {
@@ -589,8 +610,13 @@ fn render_list(frame: &mut Frame, area: Rect, app: &mut App, view: &View) {
     frame.render_widget(Paragraph::new(shown), content_area);
 
     if view.body.len() > visible {
-        let mut scrollbar_state = ScrollbarState::new(view.body.len())
-            .position(scroll)
+        // the widget's thumb only touches the bottom when the last line
+        // sits at the top of the viewport; stretch our scroll range
+        // (0 .. content-visible) onto the widget's (0 .. content-1)
+        let content = view.body.len();
+        let widget_position = scroll * (content - 1) / max_scroll;
+        let mut scrollbar_state = ScrollbarState::new(content)
+            .position(widget_position)
             .viewport_content_length(visible);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight),

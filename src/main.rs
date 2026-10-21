@@ -10,12 +10,12 @@ use mvr::{
 const USAGE: &str = "\
 mvr — пакетное переименование файлов в текущем каталоге
 
-использование: mvr [-r] <REGEX> <ШАБЛОН>
+использование: mvr <REGEX> <ШАБЛОН>
 
 REGEX    матчит имена файлов в текущем каталоге;
-         с -r матчит пути: «/» в REGEX разделяет компоненты пути,
-         глубина шаблона равна глубине пути — без «/» шаблон
-         касается только верхнего уровня;
+         «/» в REGEX разделяет компоненты пути: глубина шаблона
+         равна глубине пути, обход уходит ровно на глубину шаблона —
+         без «/» шаблон касается только верхнего уровня;
          матчинг регистронезависим, (?-i) возвращает чувствительность
 ШАБЛОН   новое имя/путь:
            $0      весь матч (при -r — весь путь)
@@ -43,15 +43,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let mut recursive = false;
-    let mut positional: Vec<&String> = Vec::new();
-    for arg in &args {
-        match arg.as_str() {
-            "-r" | "--recursive" => recursive = true,
-            _ => positional.push(arg),
-        }
-    }
-    let [regex_arg, pattern_arg] = positional.as_slice() else {
+    let [regex_arg, pattern_arg] = args.as_slice() else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
@@ -63,12 +55,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if matchers.len() > 1 && !recursive {
-        eprintln!("REGEX содержит «/» — для путей нужен флаг -r");
-        return ExitCode::from(2);
-    }
-
-    let paths = match scan_paths(recursive, matchers.len()) {
+    let paths = match scan_paths(matchers.len()) {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("не могу прочитать текущий каталог: {err}");

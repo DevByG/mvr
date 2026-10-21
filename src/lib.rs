@@ -7,8 +7,8 @@ use std::path::Path;
 
 use regex::{Regex, RegexBuilder};
 
-pub fn scan_paths(recursive: bool, depth: usize) -> io::Result<Vec<String>> {
-    if recursive && depth > 1 {
+pub fn scan_paths(depth: usize) -> io::Result<Vec<String>> {
+    if depth > 1 {
         walk_from(Path::new("."), depth)
     } else {
         top_level_names()

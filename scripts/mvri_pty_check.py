@@ -189,13 +189,16 @@ def main():
     results.append(check("кнопка [Tt]: клик переключает",
         "с учётом" in chunks[3], chunks[3][:300]))
 
-    chunks, clean = drive(e, [
-        (b"x/(y)", 0.4),
+    i = f"{base}/i"
+    os.makedirs(f"{i}/a")
+    open(f"{i}/a/b.txt", "w").close()
+    chunks, clean = drive(i, [
+        (b"a/b", 0.4),
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("подсказка: путь в regex без -r",
-        "mvri -r" in chunks[1], chunks[1][:300]))
+    results.append(check("путь в regex работает без флагов",
+        "матчей: 1" in chunks[1] and "a/b.txt" in chunks[1], chunks[1][:300]))
 
     chunks, clean = drive(e, [
         (b"\x1b[<0;11;3M", 0.3),    # клик по полю regex (фокус и так там)
@@ -239,8 +242,8 @@ def main():
         (RESIZE, 0.5),
         (b"\r", 0.4),
         (b"\r", 0.4),
-    ], args=["-r"])
-    results.append(check("r: bounded walk, глубина шаблона = глубина обхода",
+    ])
+    results.append(check("обход по глубине шаблона, без флагов",
         "01/x.txt=>z-01.txt" in flat(chunks[4])
         and "deep" not in chunks[1]
         and "переименовано: 1" in chunks[5], chunks[4][:400]))

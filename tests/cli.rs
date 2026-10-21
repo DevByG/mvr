@@ -164,7 +164,7 @@ fn recursive_mode_matches_paths_by_segments() {
 
     let (stdout, stderr, code) = run(
         dir.path(),
-        &["-r", r"^s(\d+)/ep(\d+)\.mkv$", "сезон $1/эпизод $2.mkv"],
+        &[r"^s(\d+)/ep(\d+)\.mkv$", "сезон $1/эпизод $2.mkv"],
         "y\n",
     );
 
@@ -188,16 +188,16 @@ fn recursive_mode_matches_paths_by_segments() {
 }
 
 #[test]
-fn slashed_regex_requires_recursive_flag() {
+fn slashed_regex_scans_deeper_without_flags() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("a")).unwrap();
     touch(dir.path(), "a/x.txt");
 
     let (stdout, stderr, code) = run(dir.path(), &[r"^a/x\.txt$", "y.txt"], "y\n");
 
-    assert_eq!(code, Some(2), "stdout: {stdout}");
-    assert!(stderr.contains("-r"), "stderr: {stderr}");
-    assert!(dir.path().join("a/x.txt").is_file());
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("a/x.txt => y.txt"), "stdout: {stdout}");
+    assert!(dir.path().join("y.txt").is_file());
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn recursive_single_segment_pattern_stays_on_top_level() {
     fs::create_dir_all(dir.path().join("01/01")).unwrap();
     touch(dir.path(), "01/01/01.mp3");
 
-    let (stdout, stderr, code) = run(dir.path(), &["-r", r"^\d+$", "folder-$0"], "y\n");
+    let (stdout, stderr, code) = run(dir.path(), &[r"^\d+$", "folder-$0"], "y\n");
 
     assert_eq!(code, Some(0), "stderr: {stderr}");
     assert!(stdout.contains("01 => folder-01"), "stdout: {stdout}");

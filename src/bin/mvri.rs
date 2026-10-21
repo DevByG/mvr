@@ -21,12 +21,9 @@ use mvr::{
 const DIM: Style = Style::new().fg(Color::DarkGray);
 
 fn main() -> io::Result<()> {
-    let recursive = std::env::args()
-        .skip(1)
-        .any(|arg| arg == "-r" || arg == "--recursive");
     let mut terminal = ratatui::init();
     ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-    let result = run(&mut terminal, recursive);
+    let result = run(&mut terminal);
     ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
     result
@@ -105,7 +102,6 @@ fn next_boundary(text: &str, index: usize) -> usize {
 struct App {
     inputs: [Input; 2],
     focus: usize,
-    recursive: bool,
     case_insensitive: bool,
     scroll: u16,
     paths: Vec<String>,
@@ -123,11 +119,10 @@ struct View {
     applyable: Option<Vec<Rename>>,
 }
 
-fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
+fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut app = App {
         inputs: [Input::new(), Input::new()],
         focus: 0,
-        recursive,
         case_insensitive: true,
         scroll: 0,
         paths: Vec::new(),
@@ -142,18 +137,18 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
     let mut view: Option<View> = None;
     let mut rebuild = true;
     loop {
-        // плоский каталог дёшев — освежаем фоном; рекурсивное дерево дорого —
-        // только явно (F5/применение) да при смене глубины шаблона,
-        // и обход ограничен самой этой глубиной: глубже паттерну нечего матчить
+        // обход ограничен глубиной шаблона: глубже паттерну нечего матчить;
+        // фоновый тик — только для плоского списка, глубокие деревья
+        // перев_readsываем лишь явно (F5/применение/смена глубины)
         let pattern_depth = match compile_matchers(&app.inputs[0].text, app.case_insensitive) {
             Ok(matchers) => matchers.len(),
             Err(_) => 1,
         };
         if app.scan_pending
-            || (app.recursive && scan_depth != pattern_depth)
-            || (!app.recursive && last_scan.elapsed() > Duration::from_secs(2))
+            || scan_depth != pattern_depth
+            || (pattern_depth == 1 && last_scan.elapsed() > Duration::from_secs(2))
         {
-            app.paths = scan_paths(app.recursive, pattern_depth)?;
+            app.paths = scan_paths(pattern_depth)?;
             scan_depth = pattern_depth;
             app.scan_pending = false;
             last_scan = Instant::now();
@@ -312,12 +307,6 @@ fn build_view(app: &App) -> View {
             }
         }
     };
-    if matchers.len() > 1 && !app.recursive {
-        return View {
-            status: Some("regex содержит «/» — для путей запусти mvri -r".into()),
-            ..empty
-        };
-    }
 
     let matched = match_paths(&app.paths, &matchers);
     let froms: Vec<Line<'static>> = matched
@@ -436,10 +425,6 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
 
     let title = Line::from(vec![
         Span::styled("mvri", Style::new().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            if app.recursive { " [-r]" } else { "" },
-            Style::new().fg(Color::Yellow),
-        ),
         Span::styled(
             format!(
                 "  ·  файлов: {}  ·  матчей: {}",

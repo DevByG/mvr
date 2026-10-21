@@ -20,7 +20,7 @@ use mvr::{
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
 
-fn main() -> io::Result<()> {
+pub fn run_interactive() -> io::Result<()> {
     let mut terminal = ratatui::init();
     ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal);

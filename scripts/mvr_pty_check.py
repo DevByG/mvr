@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Живой pty-смоук mvri: гоняет TUI в псевдотерминале, проверяет кадры через
+# Живой pty-смоук mvr: гоняет TUI в псевдотерминале, проверяет кадры через
 # SIGWINCH-перерисовку (полный кадр ratatui), применение, Esc и битый regex.
-# Запуск: python3 scripts/mvri_pty_check.py [путь-к-mvri]
+# Запуск: python3 scripts/mvr_pty_check.py [путь-к-mvr]
 import fcntl
 import os
 import pty
@@ -12,8 +12,8 @@ import sys
 import termios
 import time
 
-RMVI = (sys.argv[1] if len(sys.argv) > 1
-       else os.path.join(os.path.dirname(__file__), "..", "target", "release", "mvri"))
+MVR = (sys.argv[1] if len(sys.argv) > 1
+       else os.path.join(os.path.dirname(__file__), "..", "target", "release", "mvr"))
 ANSI = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][0-9A-B]|\x1b[=>]|\x1b[78]|\x1b\][^\x07]*\x07|\r"
 )
@@ -48,7 +48,7 @@ def drive(cwd, script, args=()):
         os.close(master)
         os.close(slave)
         os.chdir(cwd)
-        os.execv(RMVI, [RMVI, *args])
+        os.execv(MVR, [MVR, *args])
     os.close(slave)
 
     chunks = []
@@ -101,7 +101,7 @@ def check(name, ok, detail=""):
 
 def main():
     results = []
-    base = "/tmp/mvri-pty"
+    base = "/tmp/mvr-pty"
     os.system(f"rm -rf {base}")
     a, b, c, d = f"{base}/a", f"{base}/b", f"{base}/c", f"{base}/d"
     for dir_ in (a, b, c, d):

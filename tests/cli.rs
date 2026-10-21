@@ -248,3 +248,11 @@ fn inline_flag_restores_case_sensitivity() {
     );
     assert_eq!(names(dir.path()), vec!["Photo_1.jpg", "lo-2.jpg"]);
 }
+
+#[test]
+fn no_args_without_tty_prints_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let (stdout, stderr, code) = run(dir.path(), &[], "\n");
+    assert_eq!(code, Some(2), "stdout: {stdout}");
+    assert!(stderr.contains("использование"), "stderr: {stderr}");
+}

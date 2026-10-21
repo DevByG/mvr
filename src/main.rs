@@ -1,3 +1,5 @@
+mod tui;
+
 use std::env;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
@@ -11,6 +13,7 @@ const USAGE: &str = "\
 mvr — пакетное переименование файлов в текущем каталоге
 
 использование: mvr <REGEX> <ШАБЛОН>
+без аргументов в терминале — интерактивный режим (TUI) с живым превью
 
 REGEX    матчит имена файлов в текущем каталоге;
          «/» в REGEX разделяет компоненты пути: глубина шаблона
@@ -18,7 +21,7 @@ REGEX    матчит имена файлов в текущем каталоге
          без «/» шаблон касается только верхнего уровня;
          матчинг регистронезависим, (?-i) возвращает чувствительность
 ШАБЛОН   новое имя/путь:
-           $0      весь матч (при -r — весь путь)
+           $0      весь матч (в пути — весь путь)
            $1…$9   группы захвата (нумерация сквозная по сегментам)
            $i      порядковый номер файла (с 1, по алфавиту)
            $$      символ $
@@ -33,7 +36,7 @@ y — переименовать, всё остальное — отмена;
 примеры:
   mvr 'img_(\\d+)\\.jpg' 'photo_$1.jpg'
   mvr 'doc_.+\\.pdf' '$i.pdf'
-  mvr -r 's(\\d+)/ep (\\d+)\\.mkv' 'сезон $1/episode $2.mkv'
+  mvr 's(\\d+)/ep (\\d+)\\.mkv' 'сезон $1/episode $2.mkv'
 ";
 
 fn main() -> ExitCode {
@@ -42,12 +45,31 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-
+    if args.is_empty() {
+        return interactive_or_usage();
+    }
     let [regex_arg, pattern_arg] = args.as_slice() else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    cli(regex_arg, pattern_arg)
+}
 
+fn interactive_or_usage() -> ExitCode {
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        return match tui::run_interactive() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("интерактивный режим: {err}");
+                ExitCode::from(1)
+            }
+        };
+    }
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
+}
+
+fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     let matchers = match compile_matchers(regex_arg, true) {
         Ok(matchers) => matchers,
         Err(err) => {

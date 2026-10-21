@@ -6,6 +6,7 @@ description = "пакетное переименование файлов в т�
 
 [dependencies]
 regex = "1"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

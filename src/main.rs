@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -20,7 +20,8 @@ REGEX    выбирает файлы в текущем каталоге (пои�
            $$      символ $
 
 сначала печатается план «было => станет», затем вопрос;
-по умолчанию «нет» — переименование только по явному «y»
+y — переименовать, всё остальное — отмена;
+в терминале клавиша читается сразу (Enter не нужен), из пайпа — строкой
 
 примеры:
   mvr 'img_(\\d+)\\.jpg' 'photo_$1.jpg'
@@ -101,9 +102,47 @@ fn current_dir_names() -> io::Result<Vec<String>> {
 fn confirm() -> io::Result<bool> {
     print!("переименовать? (N/y) ");
     io::stdout().flush()?;
+    if io::stdin().is_terminal() {
+        return read_key();
+    }
     let mut answer = String::new();
     io::stdin().lock().read_line(&mut answer)?;
     Ok(answer.trim().eq_ignore_ascii_case("y"))
+}
+
+struct RestoreTermios(libc::termios);
+
+impl Drop for RestoreTermios {
+    fn drop(&mut self) {
+        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0) };
+    }
+}
+
+fn read_key() -> io::Result<bool> {
+    unsafe {
+        let mut original: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut original) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _restore = RestoreTermios(original);
+
+        let mut raw = original;
+        // ISIG off: Ctrl-C приходит байтом, а не сигналом — сигнал посреди
+        // raw-режима оставил бы терминал без эха, а байт просто отменяет.
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+        // слоты VMIN/VTIME в каноническом режиме заняты чужими значениями;
+        // без явной установки read может вернуть 0 байт немедленно
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut key = [0u8];
+        let pressed = io::stdin().read(&mut key)?;
+        println!();
+        Ok(pressed == 1 && key[0].eq_ignore_ascii_case(&b'y'))
+    }
 }
 
 fn finish(dir: &Path, renames: &[Rename]) -> ExitCode {

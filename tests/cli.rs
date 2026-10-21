@@ -55,8 +55,8 @@ fn renames_after_explicit_yes() {
         stdout.contains("img_2.jpg => photo_2.jpg"),
         "stdout: {stdout}"
     );
-    assert!(stdout.contains("переименовать? (N/y)"), "stdout: {stdout}");
-    assert!(stdout.contains("переименовано: 2"), "stdout: {stdout}");
+    assert!(stdout.contains("rename? (N/y)"), "stdout: {stdout}");
+    assert!(stdout.contains("renamed: 2"), "stdout: {stdout}");
     assert_eq!(names(dir.path()), vec!["photo_1.jpg", "photo_2.jpg"]);
 }
 
@@ -68,7 +68,7 @@ fn keeps_files_on_default_answer() {
     let (stdout, stderr, code) = run(dir.path(), &[r"img_(\d+)\.jpg", "x.jpg"], "\n");
 
     assert_eq!(code, Some(0), "stderr: {stderr}");
-    assert!(stdout.contains("отменено"), "stdout: {stdout}");
+    assert!(stdout.contains("cancelled"), "stdout: {stdout}");
     assert_eq!(names(dir.path()), vec!["img_1.jpg"]);
 }
 
@@ -104,7 +104,7 @@ fn exits_nonzero_when_nothing_matches() {
     let (stdout, stderr, code) = run(dir.path(), &[r"^nope$", "x"], "y\n");
 
     assert_eq!(code, Some(1), "stderr: {stderr}");
-    assert!(stdout.contains("ничего не найдено"), "stdout: {stdout}");
+    assert!(stdout.contains("nothing found"), "stdout: {stdout}");
     assert_eq!(names(dir.path()), vec!["keep.txt"]);
 }
 
@@ -117,10 +117,7 @@ fn refuses_collision_before_touching_anything() {
     let (stdout, stderr, code) = run(dir.path(), &[r"^(a|b)\.txt$", "same"], "y\n");
 
     assert_eq!(code, Some(1), "stdout: {stdout}");
-    assert!(
-        stderr.contains("одно и то же новое имя"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("the same new name"), "stderr: {stderr}");
     assert_eq!(names(dir.path()), vec!["a.txt", "b.txt"]);
 }
 
@@ -176,11 +173,11 @@ fn recursive_mode_matches_paths_by_segments() {
     assert!(dir.path().join("сезон 01/эпизод 2.mkv").is_file());
     assert!(dir.path().join("сезон 02/эпизод 1.mkv").is_file());
     assert!(
-        stdout.contains("опустеют и будут удалены: s01, s02"),
+        stdout.contains("will be emptied and removed: s01, s02"),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("удалено пустых каталогов: s01, s02"),
+        stdout.contains("removed empty dirs: s01, s02"),
         "stdout: {stdout}"
     );
     assert!(!dir.path().join("s01").exists());
@@ -254,5 +251,5 @@ fn no_args_without_tty_prints_usage() {
     let dir = tempfile::tempdir().unwrap();
     let (stdout, stderr, code) = run(dir.path(), &[], "\n");
     assert_eq!(code, Some(2), "stdout: {stdout}");
-    assert!(stderr.contains("использование"), "stderr: {stderr}");
+    assert!(stderr.contains("usage"), "stderr: {stderr}");
 }

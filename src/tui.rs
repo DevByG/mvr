@@ -137,9 +137,9 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
     let mut view: Option<View> = None;
     let mut rebuild = true;
     loop {
-        // обход ограничен глубиной шаблона: глубже паттерну нечего матчить;
-        // фоновый тик — только для плоского списка, глубокие деревья
-        // перев_readsываем лишь явно (F5/применение/смена глубины)
+        // the walk is bounded by pattern depth: nothing to match deeper;
+        // the background tick is flat-list only - deep trees are rescanned
+        // explicitly (F5/apply/pattern depth change)
         let pattern_depth = match compile_matchers(&app.inputs[0].text, app.case_insensitive) {
             Ok(matchers) => matchers.len(),
             Err(_) => 1,
@@ -292,7 +292,7 @@ fn build_view(app: &App) -> View {
     if regex_text.trim().is_empty() {
         return View {
             body: vec![Line::styled(
-                " введите regex — совпадения появятся здесь",
+                " type a regex - matches appear here live",
                 DIM,
             )],
             ..empty
@@ -315,7 +315,7 @@ fn build_view(app: &App) -> View {
         .collect();
     if matched.is_empty() {
         return View {
-            status: Some("ничего не найдено".into()),
+            status: Some("nothing found".into()),
             ..empty
         };
     }
@@ -336,7 +336,7 @@ fn build_view(app: &App) -> View {
         return View {
             match_count: matched.len(),
             body: froms,
-            status: outcome.error.is_none().then(|| "изменений нет".into()),
+            status: outcome.error.is_none().then(|| "nothing to change".into()),
             error: outcome.error.map(|err| err.to_string()),
             ..empty
         };
@@ -377,7 +377,10 @@ fn build_view(app: &App) -> View {
         let prunes = planned_prunes(&app.paths, &outcome.renames);
         if !prunes.is_empty() {
             body.push(Line::from(vec![
-                Span::styled("опустеют и будут удалены: ", Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    "will be emptied and removed: ",
+                    Style::new().fg(Color::Yellow),
+                ),
                 Span::from(prunes.join(", ")),
             ]));
         }
@@ -394,16 +397,16 @@ fn build_view(app: &App) -> View {
 
 fn summarize(outcome: &ApplyOutcome, total: usize) -> String {
     let done = total - outcome.failures.len();
-    let mut text = format!("переименовано: {done}");
+    let mut text = format!("renamed: {done}");
     if !outcome.pruned_dirs.is_empty() {
         text.push_str(&format!(
-            "; удалено пустых каталогов: {}",
+            "; removed empty dirs: {}",
             outcome.pruned_dirs.join(", ")
         ));
     }
     if !outcome.failures.is_empty() {
         text.push_str(&format!(
-            "; ошибок: {} (первая: {})",
+            "; errors: {} (first: {})",
             outcome.failures.len(),
             outcome.failures[0].1
         ));
@@ -427,7 +430,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
         Span::styled("mvri", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(
             format!(
-                "  ·  файлов: {}  ·  матчей: {}",
+                "  ·  files: {}  ·  matches: {}",
                 app.paths.len(),
                 view.match_count
             ),
@@ -435,9 +438,9 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
         ),
         Span::styled(
             if app.case_insensitive {
-                "  ·  регистр: без учёта"
+                "  ·  case: ignored"
             } else {
-                "  ·  регистр: с учётом"
+                "  ·  case: exact"
             },
             DIM,
         ),
@@ -459,7 +462,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     render_input(
         frame,
         pattern_area,
-        " шаблон ",
+        " pattern ",
         &app.inputs[1],
         app.focus == 1,
     );
@@ -474,7 +477,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     } else if let Some(error) = &view.error {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                format!("ошибка: {error}"),
+                format!("error: {error}"),
                 Style::new().fg(Color::Red),
             )),
             status_area,
@@ -487,9 +490,9 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     }
 
     let help = if app.summary.is_some() {
-        " любая клавиша — выход"
+        " any key to quit"
     } else {
-        " Tab поле · Enter далее/применить · Ctrl+T регистр · F5 rescan · ↑↓ PgUp/PgDn прокрутка · Esc выход"
+        " Tab fields · Enter next/apply · Ctrl+T case · F5 rescan · ↑↓ PgUp/PgDn scroll · Esc quit"
     };
     frame.render_widget(Paragraph::new(help).style(DIM), help_area);
 }
@@ -503,7 +506,7 @@ fn render_case_button(frame: &mut Frame, area: Rect, app: &App) {
     let button = Block::new()
         .borders(Borders::ALL)
         .border_style(style)
-        .title(Span::styled(" регистр ", style));
+        .title(Span::styled(" case ", style));
     frame.render_widget(
         Paragraph::new(Span::styled("[Tt]", style))
             .alignment(Alignment::Center)
@@ -553,7 +556,7 @@ fn render_list(frame: &mut Frame, area: Rect, app: &App, view: &View) {
     if hidden > 0 {
         let keep = visible.saturating_sub(1);
         shown.truncate(keep);
-        shown.push(Line::styled(format!(" … +{hidden} ещё"), DIM));
+        shown.push(Line::styled(format!(" ... +{hidden} more"), DIM));
     }
     frame.render_widget(Paragraph::new(shown), area);
 }

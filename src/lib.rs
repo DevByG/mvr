@@ -26,8 +26,8 @@ fn top_level_names() -> io::Result<Vec<String>> {
 }
 
 fn walk_from(root: &Path, depth: usize) -> io::Result<Vec<String>> {
-    // глубина обхода равна глубине шаблона: матч требует точного совпадения
-    // компонент, глубже паттерну нечего находить — туда и не идём
+    // walk depth equals pattern depth: an exact-depth match has nothing
+    // to find deeper than the pattern, so we never go there
     fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>, remaining: usize) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -104,34 +104,37 @@ impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PlanError::InvalidRegex { segment, error } => {
-                write!(f, "некорректный regex (сегмент {segment}): {error}")
+                write!(f, "invalid regex (segment {segment}): {error}")
             }
             PlanError::EmptyPatternSegment { segment } => write!(
                 f,
-                "пустой сегмент {segment} в REGEX («//» или крайний «/»)"
+                "empty segment {segment} in REGEX (" //" or a trailing "/")"
             ),
             PlanError::UnknownGroup { group, available } => write!(
                 f,
-                "шаблон ссылается на ${group}, но regex даёт группы только $0…${}",
+                "the pattern refers to ${group}, but the regex only provides $0-${}",
                 available - 1
             ),
             PlanError::SameTarget { target, sources } => write!(
                 f,
-                "одно и то же новое имя «{target}» получается из: {}",
+                "the same new name \"{target}\" is produced from: {}",
                 sources.join(", ")
             ),
             PlanError::TakenTarget { target } => {
-                write!(f, "новое имя «{target}» уже занято существующим файлом")
+                write!(
+                    f,
+                    "new name \"{target}\" is already taken by an existing file"
+                )
             }
             PlanError::ChainedTarget { target } => write!(
                 f,
-                "новое имя «{target}» совпадает с другим переименовываемым файлом — разбейте на два запуска"
+                "new name \"{target}\" collides with another renamed file - split into two runs"
             ),
             PlanError::TargetInsideSource { from, target } => {
-                write!(f, "нельзя переместить «{from}» внутрь себя («{target}»)")
+                write!(f, "cannot move \"{from}\" inside itself (\"{target}\")")
             }
             PlanError::EmptyTarget => {
-                write!(f, "пустое новое имя — проверьте ШАБЛОН")
+                write!(f, "empty new name - check the PATTERN")
             }
         }
     }
@@ -381,7 +384,7 @@ pub fn apply(root: &Path, renames: &[Rename]) -> ApplyOutcome {
             if to_path.exists() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    format!("цель уже существует: {to}"),
+                    format!("target already exists: {to}"),
                 ));
             }
             fs::rename(&from_path, &to_path)

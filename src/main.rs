@@ -10,33 +10,33 @@ use mvr::{
 };
 
 const USAGE: &str = "\
-mvr — пакетное переименование файлов в текущем каталоге
+mvr - batch rename files in the current directory
 
-использование: mvr <REGEX> <ШАБЛОН>
-без аргументов в терминале — интерактивный режим (TUI) с живым превью
+usage: mvr <REGEX> <PATTERN>
+no arguments in a terminal - interactive mode (TUI) with a live preview
 
-REGEX    матчит имена файлов в текущем каталоге;
-         «/» в REGEX разделяет компоненты пути: глубина шаблона
-         равна глубине пути, обход уходит ровно на глубину шаблона —
-         без «/» шаблон касается только верхнего уровня;
-         матчинг регистронезависим, (?-i) возвращает чувствительность
-ШАБЛОН   новое имя/путь:
-           $0      весь матч (в пути — весь путь)
-           $1…$9   группы захвата (нумерация сквозная по сегментам)
-           $i      порядковый номер файла (с 1, по алфавиту)
-           $$      символ $
-         «/» в ШАБЛОНЕ раскладывает по папкам (создаются сами),
-         «..» и абсолютные пути разрешены — как в mv;
-         каталоги, опустевшие после переименований, удаляются
+REGEX    matches file names in the current directory;
+         \"/\" in REGEX separates path components: pattern depth equals
+         path depth, the walk goes exactly as deep as the pattern -
+         without \"/\" the pattern only touches the top level;
+         matching is case-insensitive, (?-i) restores case sensitivity
+PATTERN  the new name/path:
+           $0      the whole match (the whole path for paths)
+           $1..$9  capture groups (numbered across segments)
+           $i      ordinal file number (from 1, alphabetically)
+           $$      a literal $
+         \"/\" in PATTERN sorts files into folders (created automatically),
+         \"..\" and absolute paths are allowed - like mv;
+         directories emptied by the renames are removed
 
-сначала печатается план «было => станет», затем вопрос;
-y — переименовать, всё остальное — отмена;
-в терминале клавиша читается сразу (Enter не нужен), из пайпа — строкой
+the plan \"old => new\" is printed first, then a question;
+y - rename, anything else - cancel;
+in a terminal a single keypress is read (no Enter needed), from a pipe - a line
 
-примеры:
+examples:
   mvr 'img_(\\d+)\\.jpg' 'photo_$1.jpg'
   mvr 'doc_.+\\.pdf' '$i.pdf'
-  mvr 's(\\d+)/ep (\\d+)\\.mkv' 'сезон $1/episode $2.mkv'
+  mvr 's(\\d+)/ep (\\d+)\\.mkv' 'season $1/episode $2.mkv'
 ";
 
 fn main() -> ExitCode {
@@ -60,7 +60,7 @@ fn interactive_or_usage() -> ExitCode {
         return match tui::run_interactive() {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
-                eprintln!("интерактивный режим: {err}");
+                eprintln!("interactive mode: {err}");
                 ExitCode::from(1)
             }
         };
@@ -73,14 +73,14 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     let matchers = match compile_matchers(regex_arg, true) {
         Ok(matchers) => matchers,
         Err(err) => {
-            eprintln!("некорректный REGEX: {err}");
+            eprintln!("invalid REGEX: {err}");
             return ExitCode::from(2);
         }
     };
     let paths = match scan_paths(matchers.len()) {
         Ok(paths) => paths,
         Err(err) => {
-            eprintln!("не могу прочитать текущий каталог: {err}");
+            eprintln!("cannot read the current directory: {err}");
             return ExitCode::from(1);
         }
     };
@@ -89,17 +89,17 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     let renames = match plan(&paths, &matchers, &parse_replacement(pattern_arg), &exists) {
         Ok(renames) => renames,
         Err(err) => {
-            eprintln!("ошибка: {err}");
+            eprintln!("error: {err}");
             return ExitCode::from(1);
         }
     };
 
     if match_paths(&paths, &matchers).is_empty() {
-        println!("ничего не найдено");
+        println!("nothing found");
         return ExitCode::from(1);
     }
     if renames.is_empty() {
-        println!("изменений нет");
+        println!("nothing to change");
         return ExitCode::SUCCESS;
     }
 
@@ -108,24 +108,24 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
     }
     let prunes = planned_prunes(&paths, &renames);
     if !prunes.is_empty() {
-        println!("опустеют и будут удалены: {}", prunes.join(", "));
+        println!("will be emptied and removed: {}", prunes.join(", "));
     }
 
     match confirm() {
         Ok(true) => finish(Path::new("."), &renames),
         Ok(false) => {
-            println!("отменено");
+            println!("cancelled");
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("не могу прочитать ответ: {err}");
+            eprintln!("cannot read the answer: {err}");
             ExitCode::from(1)
         }
     }
 }
 
 fn confirm() -> io::Result<bool> {
-    print!("переименовать? (N/y) ");
+    print!("rename? (N/y) ");
     io::stdout().flush()?;
     if io::stdin().is_terminal() {
         return read_key();
@@ -152,11 +152,11 @@ fn read_key() -> io::Result<bool> {
         let _restore = RestoreTermios(original);
 
         let mut raw = original;
-        // ISIG off: Ctrl-C приходит байтом, а не сигналом — сигнал посреди
-        // raw-режима оставил бы терминал без эха, а байт просто отменяет.
+        // ISIG off: Ctrl-C arrives as a byte, not a signal - a signal
+        // mid-raw-mode would leave the terminal without echo; the byte just cancels.
         raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
-        // слоты VMIN/VTIME в каноническом режиме заняты чужими значениями;
-        // без явной установки read может вернуть 0 байт немедленно
+        // VMIN/VTIME slots hold foreign values in canonical mode;
+        // without setting them explicitly read may return 0 bytes immediately
         raw.c_cc[libc::VMIN] = 1;
         raw.c_cc[libc::VTIME] = 0;
         if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
@@ -174,19 +174,16 @@ fn finish(dir: &Path, renames: &[mvr::Rename]) -> ExitCode {
     let outcome = apply(dir, renames);
     let done = renames.len() - outcome.failures.len();
     for (rename, err) in &outcome.failures {
-        eprintln!("не удалось {} => {}: {}", rename.from, rename.to, err);
+        eprintln!("failed {} => {}: {}", rename.from, rename.to, err);
     }
-    println!("переименовано: {done}");
+    println!("renamed: {done}");
     if !outcome.pruned_dirs.is_empty() {
-        println!(
-            "удалено пустых каталогов: {}",
-            outcome.pruned_dirs.join(", ")
-        );
+        println!("removed empty dirs: {}", outcome.pruned_dirs.join(", "));
     }
     if outcome.failures.is_empty() {
         ExitCode::SUCCESS
     } else {
-        eprintln!("ошибок: {}", outcome.failures.len());
+        eprintln!("errors: {}", outcome.failures.len());
         ExitCode::from(1)
     }
 }

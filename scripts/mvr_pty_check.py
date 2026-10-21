@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Живой pty-смоук mvr: гоняет TUI в псевдотерминале, проверяет кадры через
-# SIGWINCH-перерисовку (полный кадр ratatui), применение, Esc и битый regex.
-# Запуск: python3 scripts/mvr_pty_check.py [путь-к-mvr]
+# Live pty smoke test for the mvr TUI (bare invocation): drives the TUI in
+# a pseudo-terminal, verifies frames via SIGWINCH full redraws, apply, Esc
+# and a broken regex. Usage: python3 scripts/mvr_pty_check.py [path-to-mvr]
 import fcntl
 import os
 import pty
@@ -125,69 +125,69 @@ def main():
 
     chunks, clean = drive(a, [
         (b"source (\\d+) junk\\.mkv", 0.4),
-        (RESIZE, 0.5),                       # полный кадр: только regex
+        (RESIZE, 0.5),                       # full frame: regex only
         (b"\r", 0.2),
         (b"result $1.mkv", 0.4),
-        (RESIZE, 0.5),                       # полный кадр: превью было/станет
-        (b"\r", 0.5),                        # применить
-        (RESIZE, 0.5),                       # полный кадр: сводка
-        (b"\r", 0.4),                        # выход
+        (RESIZE, 0.5),                       # full frame: old/new preview
+        (b"\r", 0.5),                        # apply
+        (RESIZE, 0.5),                       # full frame: summary
+        (b"\r", 0.4),                        # quit
     ])
     only_regex_frame, preview_frame, summary_frame = chunks[1], chunks[4], chunks[6]
-    results.append(check("флоу: чистый выход", clean))
-    results.append(check("флоу: фильтр по regex вживую",
-        "source 01 junk.mkv" in only_regex_frame and "матчей: 2" in only_regex_frame,
+    results.append(check("flow: clean exit", clean))
+    results.append(check("flow: live regex filter",
+        "source 01 junk.mkv" in only_regex_frame and "matches: 2" in only_regex_frame,
         only_regex_frame[:300]))
-    results.append(check("флоу: текст regex виден в поле",
+    results.append(check("flow: regex text visible in field",
         "│source(\\d+)junk\\.mkv" in flat(only_regex_frame),
         repr(only_regex_frame[:600])))
-    results.append(check("флоу: превью было => станет",
+    results.append(check("flow: old => new preview",
         flat("source 01 junk.mkv => result 01.mkv") in flat(preview_frame)
         and flat("source 02 junk.mkv => result 02.mkv") in flat(preview_frame),
         repr(preview_frame)))
-    results.append(check("флоу: сводка после применения",
-        "переименовано: 2" in summary_frame, summary_frame[:300]))
-    results.append(check("флоу: файлы переименованы",
+    results.append(check("flow: summary after apply",
+        "renamed: 2" in summary_frame, summary_frame[:300]))
+    results.append(check("flow: files renamed",
         files(a) == ["result 01.mkv", "result 02.mkv"], str(files(a))))
 
     chunks, clean = drive(b, [
         (b"source (\\d+) junk\\.mkv", 0.4),
         (b"\x1b", 0.5),
     ])
-    results.append(check("esc: чистый выход", clean))
-    results.append(check("esc: файлы не тронуты", files(b) == ["source 01 junk.mkv"]))
+    results.append(check("esc: clean exit", clean))
+    results.append(check("esc: files untouched", files(b) == ["source 01 junk.mkv"]))
 
     chunks, clean = drive(c, [
         (b"[", 0.4),
         (RESIZE, 0.5),
         (b"\x1b", 0.5),
     ])
-    results.append(check("битый regex: чистый выход", clean))
-    results.append(check("битый regex: ошибка на экране",
-        "некорректный regex" in chunks[1], chunks[1][:300]))
+    results.append(check("broken regex: clean exit", clean))
+    results.append(check("broken regex: error on screen",
+        "invalid regex" in chunks[1], chunks[1][:300]))
 
     chunks, clean = drive(d, [
         (b"mixed\\.txt", 0.4),
         (RESIZE, 0.5),
-        (b"\x14", 0.3),          # Ctrl+T: регистр с учётом
+        (b"\x14", 0.3),          # Ctrl+T: exact case
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("регистр: insensitive по умолчанию", "матчей: 1" in chunks[1], chunks[1][:300]))
-    results.append(check("регистр: Ctrl+T включает точный",
-        "матчей: 0" in chunks[3] and "с учётом" in chunks[3], chunks[3][:300]))
+    results.append(check("case: insensitive by default", "matches: 1" in chunks[1], chunks[1][:300]))
+    results.append(check("case: Ctrl+T enables exact",
+        "matches: 0" in chunks[3] and "case: exact" in chunks[3], chunks[3][:300]))
 
     chunks, clean = drive(e, [
         (b"", 0.4),
-        (RESIZE, 0.5),                       # кнопка [Tt] на месте, режим без учёта
-        (b"\x1b[<0;97;3M", 0.4),             # клик мышью по кнопке
-        (RESIZE, 0.5),                       # режим сменился
+        (RESIZE, 0.5),                       # [Tt] button present, mode ignored
+        (b"\x1b[<0;97;3M", 0.4),             # mouse click on the button
+        (RESIZE, 0.5),                       # mode toggled
         (b"\x1b", 0.4),
     ])
-    results.append(check("кнопка [Tt]: есть на экране",
-        "[Tt]" in chunks[1] and "без учёта" in chunks[1], chunks[1][:300]))
-    results.append(check("кнопка [Tt]: клик переключает",
-        "с учётом" in chunks[3], chunks[3][:300]))
+    results.append(check("button [Tt]: visible",
+        "[Tt]" in chunks[1] and "case: ignored" in chunks[1], chunks[1][:300]))
+    results.append(check("button [Tt]: click toggles",
+        "case: exact" in chunks[3], chunks[3][:300]))
 
     i = f"{base}/i"
     os.makedirs(f"{i}/a")
@@ -197,18 +197,18 @@ def main():
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("путь в regex работает без флагов",
-        "матчей: 1" in chunks[1] and "a/b.txt" in chunks[1], chunks[1][:300]))
+    results.append(check("slash regex works with no flags",
+        "matches: 1" in chunks[1] and "a/b.txt" in chunks[1], chunks[1][:300]))
 
     chunks, clean = drive(e, [
-        (b"\x1b[<0;11;3M", 0.3),    # клик по полю regex (фокус и так там)
+        (b"\x1b[<0;11;3M", 0.3),    # click on the regex field
         (b"ab", 0.3),
-        (b"\x1b[<0;11;6M", 0.3),    # клик по полю шаблон
+        (b"\x1b[<0;11;6M", 0.3),    # click on the pattern field
         (b"xy", 0.3),
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("мышь: клик переключает поле",
+    results.append(check("mouse: click switches field",
         "│ab" in chunks[4] and "│xy" in chunks[4], chunks[4][:500]))
 
     chunks, clean = drive(f_, [
@@ -218,9 +218,9 @@ def main():
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("коллизия: превью видно вместе с ошибкой",
+    results.append(check("collision: preview stays with error",
         "a.txt=>same" in flat(chunks[3]) and "b.txt=>same" in flat(chunks[3])
-        and "одно и то же новое имя" in chunks[3], chunks[3][:400]))
+        and "the same new name" in chunks[3], chunks[3][:400]))
 
     chunks, clean = drive(g, [
         (b"new", 0.3),
@@ -231,8 +231,8 @@ def main():
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("скан: фон/F5 подхватывает новый файл",
-        "матчей: 1" in chunks[1] and "матчей: 2" in chunks[5], chunks[5][:300]))
+    results.append(check("scan: background/F5 picks up new file",
+        "matches: 1" in chunks[1] and "matches: 2" in chunks[5], chunks[5][:300]))
 
     chunks, clean = drive(h, [
         (b"(\\d+)/x\\.txt", 0.4),
@@ -243,19 +243,19 @@ def main():
         (b"\r", 0.4),
         (b"\r", 0.4),
     ])
-    results.append(check("обход по глубине шаблона, без флагов",
+    results.append(check("walk depth = pattern depth, no flags",
         "01/x.txt=>z-01.txt" in flat(chunks[4])
         and "deep" not in chunks[1]
-        and "переименовано: 1" in chunks[5], chunks[4][:400]))
+        and "renamed: 1" in chunks[5], chunks[4][:400]))
 
     chunks, clean = drive(e, [
         (b"xy", 0.3),
-        (b"\x1b[D", 0.2),          # ← курсор перед y
-        (b"\x1b[3~", 0.3),         # Delete: убрать y
+        (b"\x1b[D", 0.2),          # left arrow: cursor before y
+        (b"\x1b[3~", 0.3),         # Delete: remove y
         (RESIZE, 0.5),
         (b"\x1b", 0.4),
     ])
-    results.append(check("Delete: удаляет символ под курсором",
+    results.append(check("Delete: removes char under cursor",
         "│x│" in flat(chunks[3]) and "│xy│" not in flat(chunks[3]),
         repr(chunks[3][:400])))
 

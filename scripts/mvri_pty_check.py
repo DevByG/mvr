@@ -18,6 +18,7 @@ ANSI = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][0-9A-B]|\x1b[=>]|\x1b[78]|\x1b\][^\x07]*\x07|\r"
 )
 RESIZE = ("resize", None)
+TOUCH = ("touch", None)
 
 
 def drain(master, out, seconds):
@@ -56,8 +57,11 @@ def drive(cwd, script):
     next_height = 26
     for keys, wait in script:
         if isinstance(keys, tuple):
-            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", next_height, 100, 0, 0))
-            next_height = 25 if next_height == 26 else 26
+            if keys[0] == "touch":
+                open(keys[1], "w").close()
+            else:
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", next_height, 100, 0, 0))
+                next_height = 25 if next_height == 26 else 26
         elif keys:
             os.write(master, keys)
         out = b""
@@ -107,9 +111,13 @@ def main():
     open(f"{b}/source 01 junk.mkv", "w").close()
     open(f"{c}/x.txt", "w").close()
     open(f"{d}/Mixed.TXT", "w").close()
-    e = f"{base}/e"
-    os.makedirs(e)
+    e, f_, g = f"{base}/e", f"{base}/f", f"{base}/g"
+    for dir_ in (e, f_, g):
+        os.makedirs(dir_)
     open(f"{e}/x.txt", "w").close()
+    open(f"{f_}/a.txt", "w").close()
+    open(f"{f_}/b.txt", "w").close()
+    open(f"{g}/new1.txt", "w").close()
 
     chunks, clean = drive(a, [
         (b"source (\\d+) junk\\.mkv", 0.4),
@@ -195,6 +203,29 @@ def main():
     ])
     results.append(check("мышь: клик переключает поле",
         "│ab" in chunks[4] and "│xy" in chunks[4], chunks[4][:500]))
+
+    chunks, clean = drive(f_, [
+        (b"^(a|b)\\.txt$", 0.3),
+        (b"\r", 0.2),
+        (b"same", 0.4),
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("коллизия: превью видно вместе с ошибкой",
+        "a.txt=>same" in flat(chunks[3]) and "b.txt=>same" in flat(chunks[3])
+        and "одно и то же новое имя" in chunks[3], chunks[3][:400]))
+
+    chunks, clean = drive(g, [
+        (b"new", 0.3),
+        (RESIZE, 0.4),
+        (("touch", f"{g}/new2.txt"), 0.1),
+        (b"\x1b[15~", 0.2),
+        (b"", 2.8),
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("скан: фон/F5 подхватывает новый файл",
+        "матчей: 1" in chunks[1] and "матчей: 2" in chunks[5], chunks[5][:300]))
 
     sys.exit(0 if all(results) else 1)
 

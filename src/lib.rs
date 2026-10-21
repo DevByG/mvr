@@ -232,17 +232,37 @@ fn expand(parts: &[Part], groups: &[Option<String>], index: usize) -> String {
         .collect()
 }
 
+pub struct PlanOutcome {
+    pub renames: Vec<Rename>,
+    pub error: Option<PlanError>,
+}
+
 pub fn plan(
     paths: &[String],
     matchers: &[Regex],
     parts: &[Part],
     exists: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<Rename>, PlanError> {
+    let PlanOutcome { renames, error } = plan_outcome(paths, matchers, parts, exists);
+    error.map_or(Ok(renames), Err)
+}
+
+pub fn plan_outcome(
+    paths: &[String],
+    matchers: &[Regex],
+    parts: &[Part],
+    exists: &dyn Fn(&str) -> bool,
+) -> PlanOutcome {
     let available = 1 + matchers
         .iter()
         .map(|matcher| matcher.captures_len() - 1)
         .sum::<usize>();
-    validate_groups(parts, available)?;
+    if let Err(err) = validate_groups(parts, available) {
+        return PlanOutcome {
+            renames: Vec::new(),
+            error: Some(err),
+        };
+    }
 
     let renames: Vec<Rename> = match_paths(paths, matchers)
         .iter()
@@ -256,8 +276,16 @@ pub fn plan(
         })
         .collect();
 
-    validate_targets(&renames, exists)?;
-    Ok(renames)
+    match validate_targets(&renames, exists) {
+        Ok(()) => PlanOutcome {
+            renames,
+            error: None,
+        },
+        Err(err) => PlanOutcome {
+            renames,
+            error: Some(err),
+        },
+    }
 }
 
 fn validate_groups(parts: &[Part], available: usize) -> Result<(), PlanError> {
@@ -623,6 +651,18 @@ mod tests {
         )
         .unwrap();
         assert!(renames.is_empty());
+    }
+
+    #[test]
+    fn plan_outcome_keeps_renames_on_validation_error() {
+        let outcome = plan_outcome(
+            &["a.txt".to_string(), "b.txt".to_string()],
+            &matchers_of(r"^(a|b)\.txt$"),
+            &parts_of("same"),
+            &exists_among(&[]),
+        );
+        assert!(matches!(outcome.error, Some(PlanError::SameTarget { .. })));
+        assert_eq!(outcome.renames.len(), 2);
     }
 
     #[test]

@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -13,8 +14,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 
 use mvr::{
-    apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, scan_paths,
-    ApplyOutcome, Rename,
+    apply, compile_matchers, match_paths, parse_replacement, plan_outcome, planned_prunes,
+    scan_paths, ApplyOutcome, Rename,
 };
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -129,10 +130,14 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         input_rects: [None, None],
     };
 
+    let mut last_scan = Instant::now();
     loop {
-        if app.scan_pending {
+        // плоский каталог дёшев — освежаем фоном; рекурсивное дерево дорого,
+        // его трогаем только явно (F5) или после применения
+        if app.scan_pending || (!app.recursive && last_scan.elapsed() > Duration::from_secs(2)) {
             app.paths = scan_paths(app.recursive)?;
             app.scan_pending = false;
+            last_scan = Instant::now();
         }
         let view = build_view(&app);
         terminal.draw(|frame| render(frame, &mut app, &view))?;
@@ -170,6 +175,10 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         }
 
         let handled_edit = match key.code {
+            KeyCode::F(5) => {
+                app.scan_pending = true;
+                false
+            }
             KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -240,7 +249,6 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
             _ => false,
         };
         if handled_edit {
-            app.scan_pending = true;
             app.scroll = 0;
         }
     }
@@ -305,45 +313,64 @@ fn build_view(app: &App) -> View {
 
     let parts = parse_replacement(replacement);
     let exists = |path: &str| Path::new(path).exists();
-    match plan(&app.paths, &matchers, &parts, &exists) {
-        Ok(renames) if renames.is_empty() => View {
+    let outcome = plan_outcome(&app.paths, &matchers, &parts, &exists);
+    if outcome.renames.is_empty() {
+        return View {
             match_count: matched.len(),
             body: froms,
-            status: Some("изменений нет".into()),
+            status: outcome.error.is_none().then(|| "изменений нет".into()),
+            error: outcome.error.map(|err| err.to_string()),
             ..empty
-        },
-        Ok(renames) => {
-            let prunes = planned_prunes(&app.paths, &renames);
-            let mut body: Vec<Line<'static>> = renames
-                .iter()
-                .map(|rename| {
-                    Line::from(vec![
-                        Span::from(rename.from.clone()),
-                        Span::styled(" => ", Style::new().fg(Color::Yellow)),
-                        Span::styled(rename.to.clone(), Style::new().fg(Color::Green)),
-                    ])
-                })
-                .collect();
-            if !prunes.is_empty() {
-                body.push(Line::from(vec![
-                    Span::styled("опустеют и будут удалены: ", Style::new().fg(Color::Yellow)),
-                    Span::from(prunes.join(", ")),
-                ]));
-            }
-            View {
-                match_count: matched.len(),
-                body,
-                status: None,
-                error: None,
-                applyable: Some(renames),
-            }
+        };
+    }
+
+    let mut target_counts: HashMap<&str, usize> = HashMap::new();
+    for rename in &outcome.renames {
+        *target_counts.entry(rename.to.as_str()).or_default() += 1;
+    }
+    let conflicting =
+        |to: &str| target_counts.get(to).is_some_and(|count| *count > 1) || exists(to);
+
+    let mut body: Vec<Line<'static>> = outcome
+        .renames
+        .iter()
+        .map(|rename| {
+            let (from_style, arrow_style, to_style) = if conflicting(&rename.to) {
+                (
+                    Style::new().fg(Color::Red),
+                    Style::new().fg(Color::Red),
+                    Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    Style::new(),
+                    Style::new().fg(Color::Yellow),
+                    Style::new().fg(Color::Green),
+                )
+            };
+            Line::from(vec![
+                Span::styled(rename.from.clone(), from_style),
+                Span::styled(" => ", arrow_style),
+                Span::styled(rename.to.clone(), to_style),
+            ])
+        })
+        .collect();
+    if outcome.error.is_none() {
+        let prunes = planned_prunes(&app.paths, &outcome.renames);
+        if !prunes.is_empty() {
+            body.push(Line::from(vec![
+                Span::styled("опустеют и будут удалены: ", Style::new().fg(Color::Yellow)),
+                Span::from(prunes.join(", ")),
+            ]));
         }
-        Err(err) => View {
-            match_count: matched.len(),
-            body: froms,
-            error: Some(err.to_string()),
-            ..empty
-        },
+    }
+    let error = outcome.error.map(|err| err.to_string());
+    View {
+        match_count: matched.len(),
+        body,
+        status: None,
+        error: error.clone(),
+        applyable: (error.is_none()).then_some(outcome.renames),
     }
 }
 
@@ -448,7 +475,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     let help = if app.summary.is_some() {
         " любая клавиша — выход"
     } else {
-        " Tab поле · Enter далее/применить · Ctrl+T регистр · ↑↓ PgUp/PgDn прокрутка · Esc выход"
+        " Tab поле · Enter далее/применить · Ctrl+T регистр · F5 rescan · ↑↓ PgUp/PgDn прокрутка · Esc выход"
     };
     frame.render_widget(Paragraph::new(help).style(DIM), help_area);
 }

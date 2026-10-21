@@ -82,6 +82,10 @@ def drive(cwd, script):
     return chunks, exited_cleanly
 
 
+def flat(text):
+    return re.sub(r"\s+", "", text)
+
+
 def files(path):
     return sorted(os.listdir(path))
 
@@ -118,7 +122,9 @@ def main():
     results.append(check("флоу: фильтр по regex вживую",
         "source 01 junk.mkv" in only_regex_frame and "матчей: 2" in only_regex_frame,
         only_regex_frame[:300]))
-    flat = lambda t: re.sub(r"\s+", "", t)
+    results.append(check("флоу: текст regex виден в поле",
+        "│source(\\d+)junk\\.mkv" in flat(only_regex_frame),
+        repr(only_regex_frame[:600])))
     results.append(check("флоу: превью было => станет",
         flat("source 01 junk.mkv => result 01.mkv") in flat(preview_frame)
         and flat("source 02 junk.mkv => result 02.mkv") in flat(preview_frame),

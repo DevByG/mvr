@@ -355,8 +355,12 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
     ]);
     frame.render_widget(Paragraph::new(title), title_area);
 
-    let [regex_area, pattern_area, _gap] =
-        Layout::vertical([Constraint::Length(3); 3]).areas(inputs_area);
+    let [regex_area, pattern_area, _gap] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .areas(inputs_area);
     render_input(frame, regex_area, " regex ", &app.inputs[0], app.focus == 0);
     render_input(
         frame,

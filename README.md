@@ -32,7 +32,7 @@ $ cargo install --path .
 
 Or grab a prebuilt binary from the [releases] page.
 
-[releases]: https://github.com/alefimov/mvr/releases
+[releases]: https://github.com/DevByG/mvr/releases
 
 ## Semantics
 

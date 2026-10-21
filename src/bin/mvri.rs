@@ -2,8 +2,11 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEventKind,
+};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -21,7 +24,9 @@ fn main() -> io::Result<()> {
         .skip(1)
         .any(|arg| arg == "-r" || arg == "--recursive");
     let mut terminal = ratatui::init();
+    ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, recursive);
+    ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
     result
 }
@@ -98,6 +103,7 @@ struct App {
     paths: Vec<String>,
     scan_pending: bool,
     summary: Option<String>,
+    case_button: Option<Rect>,
 }
 
 struct View {
@@ -118,6 +124,7 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
         paths: Vec::new(),
         scan_pending: true,
         summary: None,
+        case_button: None,
     };
 
     loop {
@@ -126,12 +133,26 @@ fn run(terminal: &mut DefaultTerminal, recursive: bool) -> io::Result<()> {
             app.scan_pending = false;
         }
         let view = build_view(&app);
-        terminal.draw(|frame| render(frame, &app, &view))?;
+        terminal.draw(|frame| render(frame, &mut app, &view))?;
 
         if !event::poll(Duration::from_millis(250))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
+        let event = event::read()?;
+        if let Event::Mouse(mouse) = &event {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                let click = Position {
+                    x: mouse.column,
+                    y: mouse.row,
+                };
+                if app.case_button.is_some_and(|rect| rect.contains(click)) {
+                    app.case_insensitive = !app.case_insensitive;
+                    app.scroll = 0;
+                }
+            }
+            continue;
+        }
+        let Event::Key(key) = event else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -248,6 +269,12 @@ fn build_view(app: &App) -> View {
             }
         }
     };
+    if matchers.len() > 1 && !app.recursive {
+        return View {
+            status: Some("regex содержит «/» — для путей запусти mvri -r".into()),
+            ..empty
+        };
+    }
 
     let matched = match_paths(&app.paths, &matchers);
     let froms: Vec<Line<'static>> = matched
@@ -333,7 +360,7 @@ fn summarize(outcome: &ApplyOutcome, total: usize) -> String {
     text
 }
 
-fn render(frame: &mut Frame, app: &App, view: &View) {
+fn render(frame: &mut Frame, app: &mut App, view: &View) {
     let status_height =
         u16::from(app.summary.is_some() || view.status.is_some() || view.error.is_some());
     let [title_area, inputs_area, list_area, status_area, help_area] = Layout::vertical([
@@ -370,13 +397,17 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
     ]);
     frame.render_widget(Paragraph::new(title), title_area);
 
-    let [regex_area, pattern_area, _gap] = Layout::vertical([
+    let [regex_row, pattern_area, _gap] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
     .areas(inputs_area);
+    let [regex_area, button_area] =
+        Layout::horizontal([Constraint::Min(3), Constraint::Length(8)]).areas(regex_row);
     render_input(frame, regex_area, " regex ", &app.inputs[0], app.focus == 0);
+    render_case_button(frame, button_area, app);
+    app.case_button = Some(button_area);
     render_input(
         frame,
         pattern_area,
@@ -413,6 +444,24 @@ fn render(frame: &mut Frame, app: &App, view: &View) {
         " Tab поле · Enter далее/применить · Ctrl+T регистр · ↑↓ PgUp/PgDn прокрутка · Esc выход"
     };
     frame.render_widget(Paragraph::new(help).style(DIM), help_area);
+}
+
+fn render_case_button(frame: &mut Frame, area: Rect, app: &App) {
+    let style = if app.case_insensitive {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::DarkGray)
+    };
+    let button = Block::new()
+        .borders(Borders::ALL)
+        .border_style(style)
+        .title(Span::styled(" регистр ", style));
+    frame.render_widget(
+        Paragraph::new(Span::styled("[Tt]", style))
+            .alignment(Alignment::Center)
+            .block(button),
+        area,
+    );
 }
 
 fn render_input(frame: &mut Frame, area: Rect, label: &str, input: &Input, focused: bool) {

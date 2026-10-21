@@ -107,6 +107,9 @@ def main():
     open(f"{b}/source 01 junk.mkv", "w").close()
     open(f"{c}/x.txt", "w").close()
     open(f"{d}/Mixed.TXT", "w").close()
+    e = f"{base}/e"
+    os.makedirs(e)
+    open(f"{e}/x.txt", "w").close()
 
     chunks, clean = drive(a, [
         (b"source (\\d+) junk\\.mkv", 0.4),
@@ -161,6 +164,26 @@ def main():
     results.append(check("регистр: insensitive по умолчанию", "матчей: 1" in chunks[1], chunks[1][:300]))
     results.append(check("регистр: Ctrl+T включает точный",
         "матчей: 0" in chunks[3] and "с учётом" in chunks[3], chunks[3][:300]))
+
+    chunks, clean = drive(e, [
+        (b"", 0.4),
+        (RESIZE, 0.5),                       # кнопка [Tt] на месте, режим без учёта
+        (b"\x1b[<0;97;3M", 0.4),             # клик мышью по кнопке
+        (RESIZE, 0.5),                       # режим сменился
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("кнопка [Tt]: есть на экране",
+        "[Tt]" in chunks[1] and "без учёта" in chunks[1], chunks[1][:300]))
+    results.append(check("кнопка [Tt]: клик переключает",
+        "с учётом" in chunks[3], chunks[3][:300]))
+
+    chunks, clean = drive(e, [
+        (b"x/(y)", 0.4),
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("подсказка: путь в regex без -r",
+        "mvri -r" in chunks[1], chunks[1][:300]))
 
     sys.exit(0 if all(results) else 1)
 

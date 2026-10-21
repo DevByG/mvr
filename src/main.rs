@@ -4,7 +4,7 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use mvr::{apply, compile_matchers, match_paths, parse_replacement, plan};
+use mvr::{apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes};
 
 const USAGE: &str = "\
 mvr — пакетное переименование файлов в текущем каталоге
@@ -21,7 +21,8 @@ REGEX    матчит имена файлов в текущем каталоге
            $i      порядковый номер файла (с 1, по алфавиту)
            $$      символ $
          «/» в ШАБЛОНЕ раскладывает по папкам (создаются сами),
-         «..» и абсолютные пути разрешены — как в mv
+         «..» и абсолютные пути разрешены — как в mv;
+         каталоги, опустевшие после переименований, удаляются
 
 сначала печатается план «было => станет», затем вопрос;
 y — переименовать, всё остальное — отмена;
@@ -98,6 +99,10 @@ fn main() -> ExitCode {
 
     for rename in &renames {
         println!("{} => {}", rename.from, rename.to);
+    }
+    let prunes = planned_prunes(&paths, &renames);
+    if !prunes.is_empty() {
+        println!("опустеют и будут удалены: {}", prunes.join(", "));
     }
 
     match confirm() {
@@ -195,16 +200,22 @@ fn read_key() -> io::Result<bool> {
 }
 
 fn finish(dir: &Path, renames: &[mvr::Rename]) -> ExitCode {
-    let failures = apply(dir, renames);
-    let done = renames.len() - failures.len();
-    for (rename, err) in &failures {
+    let outcome = apply(dir, renames);
+    let done = renames.len() - outcome.failures.len();
+    for (rename, err) in &outcome.failures {
         eprintln!("не удалось {} => {}: {}", rename.from, rename.to, err);
     }
     println!("переименовано: {done}");
-    if failures.is_empty() {
+    if !outcome.pruned_dirs.is_empty() {
+        println!(
+            "удалено пустых каталогов: {}",
+            outcome.pruned_dirs.join(", ")
+        );
+    }
+    if outcome.failures.is_empty() {
         ExitCode::SUCCESS
     } else {
-        eprintln!("ошибок: {}", failures.len());
+        eprintln!("ошибок: {}", outcome.failures.len());
         ExitCode::from(1)
     }
 }

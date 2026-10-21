@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -272,7 +273,12 @@ fn validate_targets(renames: &[Rename], exists: &dyn Fn(&str) -> bool) -> Result
     Ok(())
 }
 
-pub fn apply(root: &Path, renames: &[Rename]) -> Vec<(Rename, io::Error)> {
+pub struct ApplyOutcome {
+    pub failures: Vec<(Rename, io::Error)>,
+    pub pruned_dirs: Vec<String>,
+}
+
+pub fn apply(root: &Path, renames: &[Rename]) -> ApplyOutcome {
     let mut ordered: Vec<&Rename> = renames.iter().collect();
     ordered.sort_by(|a, b| {
         a.from
@@ -313,7 +319,101 @@ pub fn apply(root: &Path, renames: &[Rename]) -> Vec<(Rename, io::Error)> {
             Err(err) => failures.push((rename.clone(), err)),
         }
     }
-    failures
+
+    let pruned_dirs = prune_emptied_dirs(root, renames);
+    ApplyOutcome {
+        failures,
+        pruned_dirs,
+    }
+}
+
+pub fn planned_prunes(paths: &[String], renames: &[Rename]) -> Vec<String> {
+    let froms: HashSet<&str> = renames.iter().map(|rename| rename.from.as_str()).collect();
+    let mut queue: Vec<String> = renames
+        .iter()
+        .filter_map(|rename| parent_dir(&rename.from))
+        .collect();
+    queue.sort();
+    queue.dedup();
+    queue.sort_by_key(|dir| Reverse(dir.matches('/').count()));
+
+    let mut pruned: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < queue.len() {
+        let dir = queue[index].clone();
+        let children_leave = paths
+            .iter()
+            .filter(|path| path.starts_with(&format!("{dir}/")))
+            .all(|path| is_gone(path, &froms, &pruned));
+        let no_target_inside = renames
+            .iter()
+            .all(|rename| rename.to != dir && !rename.to.starts_with(&format!("{dir}/")));
+        if children_leave && no_target_inside {
+            pruned.push(dir.clone());
+            if let Some(parent) = parent_dir(&dir) {
+                if !queue.contains(&parent) {
+                    queue.push(parent);
+                }
+            }
+        }
+        index += 1;
+    }
+    pruned.sort();
+    pruned
+}
+
+fn is_gone(path: &str, froms: &HashSet<&str>, pruned: &[String]) -> bool {
+    froms.contains(path)
+        || pruned
+            .iter()
+            .any(|dir| path.starts_with(&format!("{dir}/")))
+}
+
+fn prune_emptied_dirs(root: &Path, renames: &[Rename]) -> Vec<String> {
+    let mut queue: Vec<String> = renames
+        .iter()
+        .flat_map(|rename| [&rename.from, &rename.to])
+        .filter_map(|path| parent_dir(path))
+        .collect();
+    queue.sort();
+    queue.dedup();
+    queue.sort_by_key(|dir| Reverse(dir.matches('/').count()));
+
+    let mut pruned = Vec::new();
+    let mut index = 0;
+    while index < queue.len() {
+        let dir = queue[index].clone();
+        let path = root.join(&dir);
+        if dir_is_empty(&path) && fs::remove_dir(&path).is_ok() {
+            pruned.push(dir.clone());
+            if let Some(parent) = parent_dir(&dir) {
+                if !queue.contains(&parent) {
+                    queue.push(parent);
+                }
+            }
+        }
+        index += 1;
+    }
+    pruned.sort();
+    pruned
+}
+
+fn dir_is_empty(path: &Path) -> bool {
+    fs::read_dir(path)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+}
+
+fn parent_dir(path: &str) -> Option<String> {
+    let cut = path.rfind('/')?;
+    let parent = &path[..cut];
+    if parent.is_empty()
+        || parent.starts_with('/')
+        || parent.split('/').any(|part| part == "." || part == "..")
+    {
+        return None;
+    }
+    Some(parent.to_string())
 }
 
 fn translate(path: &str, moves: &[Rename]) -> String {
@@ -550,7 +650,7 @@ mod tests {
             from: "ep 01.mkv".into(),
             to: "01/mov.ts".into(),
         }];
-        assert!(apply(dir.path(), &renames).is_empty());
+        assert!(apply(dir.path(), &renames).failures.is_empty());
         assert!(dir.path().join("01/mov.ts").is_file());
     }
 
@@ -570,7 +670,7 @@ mod tests {
                 to: "сезон 1".into(),
             },
         ];
-        assert!(apply(dir.path(), &renames).is_empty());
+        assert!(apply(dir.path(), &renames).failures.is_empty());
         assert!(dir.path().join("сезон 1/x/ep1.mkv").is_file());
         assert!(!dir.path().join("s01").exists());
     }
@@ -584,12 +684,89 @@ mod tests {
             from: "a.txt".into(),
             to: "b.txt".into(),
         }];
-        let failures = apply(dir.path(), &renames);
+        let failures = apply(dir.path(), &renames).failures;
         assert_eq!(failures.len(), 1);
         assert_eq!(
             fs::read_to_string(dir.path().join("b.txt")).unwrap(),
             "occupied"
         );
+    }
+
+    #[test]
+    fn planned_prunes_predicts_emptied_source_dirs() {
+        let paths: Vec<String> = vec!["s01/ep1".into(), "s01/ep2".into(), "keep.txt".into()];
+        let renames = vec![
+            Rename {
+                from: "s01/ep1".into(),
+                to: "a/ep1".into(),
+            },
+            Rename {
+                from: "s01/ep2".into(),
+                to: "a/ep2".into(),
+            },
+        ];
+        assert_eq!(planned_prunes(&paths, &renames), vec!["s01".to_string()]);
+    }
+
+    #[test]
+    fn planned_prunes_keep_dirs_with_staying_files_and_targets() {
+        let paths: Vec<String> = vec!["s/ep1".into(), "s/stay".into(), "t/ep".into()];
+        let staying = vec![Rename {
+            from: "s/ep1".into(),
+            to: "out".into(),
+        }];
+        assert!(planned_prunes(&paths, &staying).is_empty());
+
+        let receiving = vec![Rename {
+            from: "t/ep".into(),
+            to: "s/ep".into(),
+        }];
+        assert_eq!(planned_prunes(&paths, &receiving), vec!["t".to_string()]);
+    }
+
+    #[test]
+    fn planned_prunes_chain_upward_through_emptied_ancestors() {
+        let paths: Vec<String> = vec!["a/b/f".into()];
+        let renames = vec![Rename {
+            from: "a/b/f".into(),
+            to: "c".into(),
+        }];
+        assert_eq!(
+            planned_prunes(&paths, &renames),
+            vec!["a".to_string(), "a/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn apply_removes_emptied_husks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("s01")).unwrap();
+        fs::write(dir.path().join("s01/ep1.mkv"), b"").unwrap();
+        let renames = vec![Rename {
+            from: "s01/ep1.mkv".into(),
+            to: "01/mov.ts".into(),
+        }];
+        let outcome = apply(dir.path(), &renames);
+        assert!(outcome.failures.is_empty());
+        assert_eq!(outcome.pruned_dirs, vec!["s01".to_string()]);
+        assert!(!dir.path().join("s01").exists());
+        assert!(dir.path().join("01/mov.ts").is_file());
+    }
+
+    #[test]
+    fn apply_keeps_dirs_that_still_have_content() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("s01")).unwrap();
+        fs::write(dir.path().join("s01/ep1.mkv"), b"").unwrap();
+        fs::write(dir.path().join("s01/ep2.mkv"), b"").unwrap();
+        let renames = vec![Rename {
+            from: "s01/ep1.mkv".into(),
+            to: "out.mkv".into(),
+        }];
+        let outcome = apply(dir.path(), &renames);
+        assert!(outcome.failures.is_empty());
+        assert!(outcome.pruned_dirs.is_empty());
+        assert!(dir.path().join("s01/ep2.mkv").is_file());
     }
 
     #[test]
@@ -599,7 +776,7 @@ mod tests {
             from: "нет".into(),
             to: "x".into(),
         }];
-        let failures = apply(dir.path(), &renames);
+        let failures = apply(dir.path(), &renames).failures;
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].0.from, "нет");
     }

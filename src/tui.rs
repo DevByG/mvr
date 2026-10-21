@@ -15,7 +15,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 use mvr::{
     apply, compile_matchers, match_paths, parse_replacement, plan_outcome, planned_prunes,
-    scan_paths, ApplyOutcome, Rename,
+    ApplyOutcome, Rename, Scanner,
 };
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -105,7 +105,6 @@ struct App {
     case_insensitive: bool,
     scroll: u16,
     paths: Vec<String>,
-    scan_pending: bool,
     summary: Option<String>,
     case_button: Option<Rect>,
     input_rects: [Option<Rect>; 2],
@@ -126,32 +125,40 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         case_insensitive: true,
         scroll: 0,
         paths: Vec::new(),
-        scan_pending: true,
         summary: None,
         case_button: None,
         input_rects: [None, None],
     };
 
+    let mut scanner = Scanner::new(Path::new("."));
+    let mut scan_key = String::new();
+    let mut force_scan = false;
     let mut last_scan = Instant::now();
-    let mut scan_depth = 0;
     let mut view: Option<View> = None;
     let mut rebuild = true;
     loop {
-        // the walk is bounded by pattern depth: nothing to match deeper;
-        // the background tick is flat-list only - deep trees are rescanned
-        // explicitly (F5/apply/pattern depth change)
+        // the walk only enters directories matched by earlier pattern
+        // segments and caches every directory it has read: pattern edits
+        // reuse the cache, only F5 and applying re-read the filesystem;
+        // the flat top-level list is cheap and stays fresh on a tick
         let pattern_depth = match compile_matchers(&app.inputs[0].text, app.case_insensitive) {
             Ok(matchers) => matchers.len(),
             Err(_) => 1,
         };
-        if app.scan_pending
-            || scan_depth != pattern_depth
+        let key = format!("{}|{}", app.case_insensitive, app.inputs[0].text);
+        if force_scan
+            || key != scan_key
             || (pattern_depth == 1 && last_scan.elapsed() > Duration::from_secs(2))
         {
-            app.paths = scan_paths(pattern_depth)?;
-            scan_depth = pattern_depth;
-            app.scan_pending = false;
+            let matchers = compile_matchers(&app.inputs[0].text, app.case_insensitive);
+            let scanned = match &matchers {
+                Ok(matchers) => scanner.scan(matchers, force_scan)?,
+                Err(_) => scanner.scan(&[], force_scan)?,
+            };
+            scan_key = key;
+            force_scan = false;
             last_scan = Instant::now();
+            app.paths = scanned;
             rebuild = true;
         }
         if rebuild || view.is_none() {
@@ -195,7 +202,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
 
         let handled_edit = match key.code {
             KeyCode::F(5) => {
-                app.scan_pending = true;
+                force_scan = true;
                 false
             }
             KeyCode::Esc => return Ok(()),
@@ -221,7 +228,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                 if let Some(renames) = &view.as_ref().unwrap().applyable {
                     let outcome = apply(Path::new("."), renames);
                     app.summary = Some(summarize(&outcome, renames.len()));
-                    app.scan_pending = true;
+                    force_scan = true;
                 }
                 false
             }
@@ -427,7 +434,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     .areas(frame.area());
 
     let title = Line::from(vec![
-        Span::styled("mvri", Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled("mvr", Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(
             format!(
                 "  ·  files: {}  ·  matches: {}",

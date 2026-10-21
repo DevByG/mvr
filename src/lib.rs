@@ -1,55 +1,102 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use regex::{Regex, RegexBuilder};
 
-pub fn scan_paths(depth: usize) -> io::Result<Vec<String>> {
-    if depth > 1 {
-        walk_from(Path::new("."), depth)
-    } else {
-        top_level_names()
-    }
+pub struct Scanner {
+    root: PathBuf,
+    // every directory read once and cached until a forced scan (F5/apply):
+    // pattern edits reuse the cache, the filesystem is not re-read
+    listed: HashMap<String, Vec<(String, bool)>>,
 }
 
-fn top_level_names() -> io::Result<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in fs::read_dir(".")? {
-        if let Ok(name) = entry?.file_name().into_string() {
-            names.push(name);
+impl Scanner {
+    pub fn new(root: &Path) -> Self {
+        Scanner {
+            root: root.to_path_buf(),
+            listed: HashMap::new(),
         }
     }
-    Ok(names)
-}
 
-fn walk_from(root: &Path, depth: usize) -> io::Result<Vec<String>> {
-    // walk depth equals pattern depth: an exact-depth match has nothing
-    // to find deeper than the pattern, so we never go there
-    fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>, remaining: usize) -> io::Result<()> {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
+    pub fn scan(&mut self, matchers: &[Regex], force: bool) -> io::Result<Vec<String>> {
+        if force {
+            self.listed.clear();
+        }
+        if matchers.len() < 2 {
+            // the flat top-level list is one cheap read_dir - keep it fresh
+            return top_level_names(&self.root);
+        }
+        let depth = matchers.len();
+        let mut paths = Vec::new();
+        self.walk("", 1, depth, matchers, "", &mut paths)?;
+        Ok(paths)
+    }
+
+    // the walk goes exactly as deep as the pattern, and it only enters
+    // a directory whose name matches the segment for its level: with exact
+    // depth matching, nothing below a non-matching directory can match
+    fn walk(
+        &mut self,
+        dir: &str,
+        level: usize,
+        depth: usize,
+        matchers: &[Regex],
+        prefix: &str,
+        out: &mut Vec<String>,
+    ) -> io::Result<()> {
+        let children = self.list_dir(dir)?.clone();
+        for (name, is_dir) in children {
             let path = if prefix.is_empty() {
                 name.clone()
             } else {
                 format!("{prefix}/{name}")
             };
             out.push(path.clone());
-            if remaining > 1 && entry.file_type()?.is_dir() {
-                walk(&entry.path(), &path, out, remaining - 1)?;
+            if level < depth && is_dir && matchers[level - 1].is_match(&name) {
+                let child = if dir.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{dir}/{name}")
+                };
+                self.walk(&child, level + 1, depth, matchers, &path, out)?;
             }
         }
         Ok(())
     }
 
-    let mut paths = Vec::new();
-    walk(root, "", &mut paths, depth)?;
-    Ok(paths)
+    fn list_dir(&mut self, dir: &str) -> io::Result<&Vec<(String, bool)>> {
+        if !self.listed.contains_key(dir) {
+            let path = if dir.is_empty() {
+                self.root.clone()
+            } else {
+                self.root.join(dir)
+            };
+            let entries = fs::read_dir(path)?
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let name = entry.file_name().into_string().ok()?;
+                    let is_dir = entry.file_type().ok().is_some_and(|kind| kind.is_dir());
+                    Some((name, is_dir))
+                })
+                .collect();
+            self.listed.insert(dir.to_string(), entries);
+        }
+        Ok(&self.listed[dir])
+    }
+}
+
+fn top_level_names(root: &Path) -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(root)? {
+        if let Ok(name) = entry?.file_name().into_string() {
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 #[derive(Debug, Clone)]
@@ -542,17 +589,43 @@ mod tests {
     }
 
     #[test]
-    fn walk_is_bounded_by_depth() {
+    fn scanner_walks_only_matching_subtrees_to_pattern_depth() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("a/b/c")).unwrap();
-        fs::write(dir.path().join("a/b/c/deep.txt"), b"").unwrap();
+        fs::create_dir_all(dir.path().join("01/sub")).unwrap();
+        fs::create_dir_all(dir.path().join("ab/sub")).unwrap();
+        fs::write(dir.path().join("01/x.txt"), b"").unwrap();
+        fs::write(dir.path().join("01/sub/deep.txt"), b"").unwrap();
+        fs::write(dir.path().join("ab/sub/x.txt"), b"").unwrap();
 
-        let two = walk_from(dir.path(), 2).unwrap();
-        assert!(two.contains(&"a/b".to_string()));
-        assert!(two.iter().all(|p| p.split('/').count() <= 2));
+        let mut scanner = Scanner::new(dir.path());
+        let paths = scanner.scan(&matchers_of(r"\d+/\w+\.txt"), false).unwrap();
+        assert!(paths.contains(&"01/x.txt".to_string()));
+        assert!(paths.contains(&"01/sub".to_string()));
+        assert!(!paths.iter().any(|p| p.starts_with("ab/")));
 
-        let four = walk_from(dir.path(), 4).unwrap();
-        assert!(four.contains(&"a/b/c/deep.txt".to_string()));
+        let deep = scanner
+            .scan(&matchers_of(r"\d+/sub/\w+\.txt"), false)
+            .unwrap();
+        assert!(deep.contains(&"01/sub/deep.txt".to_string()));
+    }
+
+    #[test]
+    fn scanner_cache_stays_stale_until_forced() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("01")).unwrap();
+        fs::write(dir.path().join("01/a.txt"), b"").unwrap();
+
+        let mut scanner = Scanner::new(dir.path());
+        let matchers = matchers_of(r"01/\w+\.txt");
+        let first = scanner.scan(&matchers, false).unwrap();
+        assert!(first.contains(&"01/a.txt".to_string()));
+
+        fs::write(dir.path().join("01/b.txt"), b"").unwrap();
+        let cached = scanner.scan(&matchers, false).unwrap();
+        assert!(!cached.contains(&"01/b.txt".to_string()));
+
+        let forced = scanner.scan(&matchers, true).unwrap();
+        assert!(forced.contains(&"01/b.txt".to_string()));
     }
 
     #[test]

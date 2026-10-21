@@ -38,8 +38,11 @@ Or grab a prebuilt binary from the [releases] page.
 
 REGEX matches file names in the current directory. A `/` in REGEX separates path
 components: **pattern depth equals path depth**, and the scan goes exactly as
-deep as the pattern — `(\d+)/x\.txt` matches `01/x.txt` but never `01/a/x.txt`.
-A pattern without `/` only touches the top level.
+deep as the pattern, entering only directories whose names match the
+corresponding segment — `(\d+)/x\.txt` matches `01/x.txt`, never `01/a/x.txt`,
+and directories like `.cache` are not even opened. A pattern without `/` only
+touches the top level. Directories read by the scanner are cached: edits to the
+pattern reuse the cache, `F5` (or applying) re-reads the filesystem.
 
 PATTERN builds the new name (or path):
 

@@ -5,9 +5,7 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use mvr::{
-    apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, scan_paths,
-};
+use mvr::{apply, compile_matchers, match_paths, parse_replacement, plan, planned_prunes, Scanner};
 
 const USAGE: &str = "\
 mvr - batch rename files in the current directory
@@ -77,7 +75,7 @@ fn cli(regex_arg: &str, pattern_arg: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let paths = match scan_paths(matchers.len()) {
+    let paths = match Scanner::new(Path::new(".")).scan(&matchers, false) {
         Ok(paths) => paths,
         Err(err) => {
             eprintln!("cannot read the current directory: {err}");

@@ -259,6 +259,25 @@ def main():
         "│x│" in flat(chunks[3]) and "│xy│" not in flat(chunks[3]),
         repr(chunks[3][:400])))
 
+    j = f"{base}/j"
+    os.makedirs(f"{j}/01")
+    open(f"{j}/01/a.txt", "w").close()
+    chunks, clean = drive(j, [
+        (b"01/\\w+\\.txt", 0.4),
+        (RESIZE, 0.5),                       # cached walk: files: 2, matches: 1
+        (("touch", f"{j}/01/b.txt"), 0.1),
+        (b"", 1.0),                          # no tick at depth >= 2 - cache must hold
+        (RESIZE, 0.5),                       # still files: 2 - b.txt invisible
+        (b"\x1b[15~", 0.3),                 # F5: force re-read
+        (RESIZE, 0.5),                       # files: 3, matches: 2
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("cache: no F5 - fs changes invisible",
+        "files: 2" in chunks[1] and "files: 2" in chunks[4] and "b.txt" not in chunks[4],
+        chunks[4][:400]))
+    results.append(check("cache: F5 re-reads the tree",
+        "files: 3" in chunks[6] and "matches: 2" in chunks[6], chunks[6][:400]))
+
     sys.exit(0 if all(results) else 1)
 
 

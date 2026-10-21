@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use regex::{Captures, Regex};
+use regex::Regex;
 
 #[derive(Debug, Clone)]
 pub struct Rename {
@@ -13,14 +13,26 @@ pub struct Rename {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Segment {
+pub enum Part {
     Literal(String),
     Group(usize),
     Index,
 }
 
+pub struct MatchedFile {
+    pub path: String,
+    pub groups: Vec<Option<String>>,
+}
+
 #[derive(Debug)]
 pub enum PlanError {
+    InvalidRegex {
+        segment: usize,
+        error: String,
+    },
+    EmptyPatternSegment {
+        segment: usize,
+    },
     UnknownGroup {
         group: usize,
         available: usize,
@@ -35,14 +47,23 @@ pub enum PlanError {
     ChainedTarget {
         target: String,
     },
-    InvalidTarget {
+    TargetInsideSource {
+        from: String,
         target: String,
     },
+    EmptyTarget,
 }
 
 impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PlanError::InvalidRegex { segment, error } => {
+                write!(f, "некорректный regex (сегмент {segment}): {error}")
+            }
+            PlanError::EmptyPatternSegment { segment } => write!(
+                f,
+                "пустой сегмент {segment} в REGEX («//» или крайний «/»)"
+            ),
             PlanError::UnknownGroup { group, available } => write!(
                 f,
                 "шаблон ссылается на ${group}, но regex даёт группы только $0…${}",
@@ -53,30 +74,31 @@ impl fmt::Display for PlanError {
                 "одно и то же новое имя «{target}» получается из: {}",
                 sources.join(", ")
             ),
-            PlanError::TakenTarget { target } => write!(
-                f,
-                "новое имя «{target}» уже занято файлом в этом каталоге"
-            ),
+            PlanError::TakenTarget { target } => {
+                write!(f, "новое имя «{target}» уже занято существующим файлом")
+            }
             PlanError::ChainedTarget { target } => write!(
                 f,
                 "новое имя «{target}» совпадает с другим переименовываемым файлом — разбейте на два запуска"
             ),
-            PlanError::InvalidTarget { target } => write!(
-                f,
-                "недопустимое новое имя «{target}»: ожидается непустое имя файла без «/»"
-            ),
+            PlanError::TargetInsideSource { from, target } => {
+                write!(f, "нельзя переместить «{from}» внутрь себя («{target}»)")
+            }
+            PlanError::EmptyTarget => {
+                write!(f, "пустое новое имя — проверьте ШАБЛОН")
+            }
         }
     }
 }
 
-pub fn parse_pattern(pattern: &str) -> Vec<Segment> {
-    fn flush(literal: &mut String, segments: &mut Vec<Segment>) {
+pub fn parse_replacement(pattern: &str) -> Vec<Part> {
+    fn flush(literal: &mut String, parts: &mut Vec<Part>) {
         if !literal.is_empty() {
-            segments.push(Segment::Literal(std::mem::take(literal)));
+            parts.push(Part::Literal(std::mem::take(literal)));
         }
     }
 
-    let mut segments = Vec::new();
+    let mut parts = Vec::new();
     let mut literal = String::new();
     let mut chars = pattern.chars();
 
@@ -88,12 +110,12 @@ pub fn parse_pattern(pattern: &str) -> Vec<Segment> {
         match chars.next() {
             Some('$') => literal.push('$'),
             Some('i') => {
-                flush(&mut literal, &mut segments);
-                segments.push(Segment::Index);
+                flush(&mut literal, &mut parts);
+                parts.push(Part::Index);
             }
             Some(d) if d.is_ascii_digit() => {
-                flush(&mut literal, &mut segments);
-                segments.push(Segment::Group(d as usize - '0' as usize));
+                flush(&mut literal, &mut parts);
+                parts.push(Part::Group(d as usize - '0' as usize));
             }
             Some(other) => {
                 literal.push('$');
@@ -102,58 +124,98 @@ pub fn parse_pattern(pattern: &str) -> Vec<Segment> {
             None => literal.push('$'),
         }
     }
-    flush(&mut literal, &mut segments);
-    segments
+    flush(&mut literal, &mut parts);
+    parts
 }
 
-fn expand(segments: &[Segment], captures: &Captures<'_>, index: usize) -> String {
-    segments
+pub fn compile_matchers(pattern: &str) -> Result<Vec<Regex>, PlanError> {
+    pattern
+        .split('/')
+        .enumerate()
+        .map(|(segment, source)| {
+            if source.is_empty() {
+                Err(PlanError::EmptyPatternSegment { segment })
+            } else {
+                Regex::new(source).map_err(|err| PlanError::InvalidRegex {
+                    segment,
+                    error: err.to_string(),
+                })
+            }
+        })
+        .collect()
+}
+
+pub fn match_paths(paths: &[String], matchers: &[Regex]) -> Vec<MatchedFile> {
+    let mut matched = Vec::new();
+    for path in paths {
+        let components: Vec<&str> = path.split('/').collect();
+        if components.len() != matchers.len() {
+            continue;
+        }
+        let mut groups = vec![Some(path.clone())];
+        let mut all_matched = true;
+        for (component, matcher) in components.iter().zip(matchers) {
+            let Some(captures) = matcher.captures(component) else {
+                all_matched = false;
+                break;
+            };
+            for group in 1..captures.len() {
+                groups.push(captures.get(group).map(|m| m.as_str().to_string()));
+            }
+        }
+        if all_matched {
+            matched.push(MatchedFile {
+                path: path.clone(),
+                groups,
+            });
+        }
+    }
+    matched.sort_by(|a, b| a.path.cmp(&b.path));
+    matched
+}
+
+fn expand(parts: &[Part], groups: &[Option<String>], index: usize) -> String {
+    parts
         .iter()
-        .map(|segment| match segment {
-            Segment::Literal(text) => text.clone(),
-            Segment::Group(number) => captures
-                .get(*number)
-                .map(|m| m.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            Segment::Index => index.to_string(),
+        .map(|part| match part {
+            Part::Literal(text) => text.clone(),
+            Part::Group(number) => groups.get(*number).cloned().flatten().unwrap_or_default(),
+            Part::Index => index.to_string(),
         })
         .collect()
 }
 
 pub fn plan(
-    dir_names: &[String],
-    regex: &Regex,
-    segments: &[Segment],
+    paths: &[String],
+    matchers: &[Regex],
+    parts: &[Part],
+    exists: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<Rename>, PlanError> {
-    validate_groups(segments, regex.captures_len())?;
-
-    let mut matched: Vec<&String> = dir_names
+    let available = 1 + matchers
         .iter()
-        .filter(|name| regex.is_match(name))
-        .collect();
-    matched.sort();
+        .map(|matcher| matcher.captures_len() - 1)
+        .sum::<usize>();
+    validate_groups(parts, available)?;
 
-    let renames: Vec<Rename> = matched
+    let renames: Vec<Rename> = match_paths(paths, matchers)
         .iter()
         .enumerate()
-        .filter_map(|(position, name)| {
-            let captures = regex.captures(name)?;
-            let to = expand(segments, &captures, position + 1);
-            (to != **name).then(|| Rename {
-                from: (*name).clone(),
+        .filter_map(|(position, file)| {
+            let to = expand(parts, &file.groups, position + 1);
+            (to != file.path).then(|| Rename {
+                from: file.path.clone(),
                 to,
             })
         })
         .collect();
 
-    validate_targets(&renames, dir_names)?;
+    validate_targets(&renames, exists)?;
     Ok(renames)
 }
 
-fn validate_groups(segments: &[Segment], available: usize) -> Result<(), PlanError> {
-    for segment in segments {
-        if let Segment::Group(group) = segment {
+fn validate_groups(parts: &[Part], available: usize) -> Result<(), PlanError> {
+    for part in parts {
+        if let Part::Group(group) = part {
             if *group >= available {
                 return Err(PlanError::UnknownGroup {
                     group: *group,
@@ -165,7 +227,7 @@ fn validate_groups(segments: &[Segment], available: usize) -> Result<(), PlanErr
     Ok(())
 }
 
-fn validate_targets(renames: &[Rename], dir_names: &[String]) -> Result<(), PlanError> {
+fn validate_targets(renames: &[Rename], exists: &dyn Fn(&str) -> bool) -> Result<(), PlanError> {
     let mut by_target: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for rename in renames {
         by_target
@@ -175,10 +237,8 @@ fn validate_targets(renames: &[Rename], dir_names: &[String]) -> Result<(), Plan
     }
 
     for (target, sources) in by_target {
-        if target.is_empty() || target.contains('/') {
-            return Err(PlanError::InvalidTarget {
-                target: target.into(),
-            });
+        if target.is_empty() {
+            return Err(PlanError::EmptyTarget);
         }
         if sources.len() > 1 {
             return Err(PlanError::SameTarget {
@@ -186,7 +246,17 @@ fn validate_targets(renames: &[Rename], dir_names: &[String]) -> Result<(), Plan
                 sources: sources.into_iter().map(String::from).collect(),
             });
         }
-        if dir_names.iter().any(|name| name == target) {
+        let inside_source = renames
+            .iter()
+            .find(|rename| target.starts_with(&format!("{}/", rename.from)))
+            .map(|rename| rename.from.as_str());
+        if let Some(from) = inside_source {
+            return Err(PlanError::TargetInsideSource {
+                from: from.into(),
+                target: target.into(),
+            });
+        }
+        if exists(target) {
             let chained = renames.iter().any(|rename| rename.from == target);
             return Err(if chained {
                 PlanError::ChainedTarget {
@@ -202,108 +272,207 @@ fn validate_targets(renames: &[Rename], dir_names: &[String]) -> Result<(), Plan
     Ok(())
 }
 
-pub fn apply(dir: &Path, renames: &[Rename]) -> Vec<(Rename, io::Error)> {
-    renames
-        .iter()
-        .filter_map(|rename| {
-            let from = dir.join(&rename.from);
-            let to = dir.join(&rename.to);
-            match fs::rename(&from, &to) {
-                Ok(()) => None,
-                Err(err) => Some((rename.clone(), err)),
+pub fn apply(root: &Path, renames: &[Rename]) -> Vec<(Rename, io::Error)> {
+    let mut ordered: Vec<&Rename> = renames.iter().collect();
+    ordered.sort_by(|a, b| {
+        a.from
+            .matches('/')
+            .count()
+            .cmp(&b.from.matches('/').count())
+            .then_with(|| a.from.cmp(&b.from))
+    });
+
+    let mut moved_dirs: Vec<Rename> = Vec::new();
+    let mut failures = Vec::new();
+
+    for rename in ordered {
+        let from = translate(&rename.from, &moved_dirs);
+        let to = translate(&rename.to, &moved_dirs);
+        let from_path = root.join(&from);
+        let to_path = root.join(&to);
+
+        let was_dir = from_path.is_dir();
+        let outcome = (|| -> io::Result<()> {
+            if let Some(parent) = to_path.parent() {
+                fs::create_dir_all(parent)?;
             }
-        })
-        .collect()
+            if to_path.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("цель уже существует: {to}"),
+                ));
+            }
+            fs::rename(&from_path, &to_path)
+        })();
+        match outcome {
+            Ok(()) => {
+                if was_dir {
+                    moved_dirs.push(rename.clone());
+                }
+            }
+            Err(err) => failures.push((rename.clone(), err)),
+        }
+    }
+    failures
+}
+
+fn translate(path: &str, moves: &[Rename]) -> String {
+    let mut current = path.to_string();
+    for _ in 0..=moves.len() {
+        let Some(best) = moves
+            .iter()
+            .filter(|m| current == m.from || current.starts_with(&format!("{}/", m.from)))
+            .max_by_key(|m| m.from.len())
+        else {
+            return current;
+        };
+        current = format!("{}{}", best.to, &current[best.from.len()..]);
+    }
+    current
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn segments_of(pattern: &str) -> Vec<Segment> {
-        parse_pattern(pattern)
+    fn parts_of(pattern: &str) -> Vec<Part> {
+        parse_replacement(pattern)
+    }
+
+    fn matchers_of(pattern: &str) -> Vec<Regex> {
+        compile_matchers(pattern).unwrap()
+    }
+
+    fn exists_among<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |path| names.contains(&path)
     }
 
     #[test]
-    fn pattern_splits_literals_groups_and_index() {
+    fn replacement_splits_literals_groups_and_index() {
         assert_eq!(
-            segments_of("$1_файл_$i.$0$$"),
+            parts_of("$1_файл_$i.$0$$"),
             vec![
-                Segment::Group(1),
-                Segment::Literal("_файл_".into()),
-                Segment::Index,
-                Segment::Literal(".".into()),
-                Segment::Group(0),
-                Segment::Literal("$".into()),
+                Part::Group(1),
+                Part::Literal("_файл_".into()),
+                Part::Index,
+                Part::Literal(".".into()),
+                Part::Group(0),
+                Part::Literal("$".into()),
             ]
         );
     }
 
     #[test]
-    fn pattern_keeps_stray_dollars_literal() {
-        assert_eq!(segments_of("a$b"), vec![Segment::Literal("a$b".into())]);
-        assert_eq!(segments_of("end$"), vec![Segment::Literal("end$".into())]);
+    fn replacement_keeps_stray_dollars_literal() {
+        assert_eq!(parts_of("a$b"), vec![Part::Literal("a$b".into())]);
+        assert_eq!(parts_of("end$"), vec![Part::Literal("end$".into())]);
     }
 
     #[test]
-    fn pattern_groups_are_single_digit() {
+    fn replacement_groups_are_single_digit() {
         assert_eq!(
-            segments_of("$10"),
-            vec![Segment::Group(1), Segment::Literal("0".into())]
+            parts_of("$10"),
+            vec![Part::Group(1), Part::Literal("0".into())]
         );
     }
 
     #[test]
     fn expand_substitutes_groups_and_index() {
-        let regex = Regex::new(r"(\w+)-(\d+)").unwrap();
-        let captures = regex.captures("img-42").unwrap();
-        assert_eq!(
-            expand(&segments_of("$2_$1_$i"), &captures, 7),
-            "42_img_7".to_string()
-        );
-        assert_eq!(
-            expand(&segments_of("$0"), &captures, 1),
-            "img-42".to_string()
-        );
+        let groups = vec![Some("img-42".into()), Some("img".into()), Some("42".into())];
+        assert_eq!(expand(&parts_of("$2_$1_$i"), &groups, 7), "42_img_7");
+        assert_eq!(expand(&parts_of("$0"), &groups, 1), "img-42");
     }
 
     #[test]
     fn expand_missing_optional_group_is_empty() {
-        let regex = Regex::new(r"(a)(x)?(b)").unwrap();
-        let captures = regex.captures("ab").unwrap();
+        let groups = vec![Some("ab".into()), Some("a".into()), None, Some("b".into())];
+        assert_eq!(expand(&parts_of("$1[$2]$3"), &groups, 1), "a[]b");
+    }
+
+    #[test]
+    fn matchers_reject_empty_segment() {
+        assert!(matches!(
+            compile_matchers("a//b").unwrap_err(),
+            PlanError::EmptyPatternSegment { .. }
+        ));
+        assert!(matches!(
+            compile_matchers("a/").unwrap_err(),
+            PlanError::EmptyPatternSegment { .. }
+        ));
+    }
+
+    #[test]
+    fn depth_of_pattern_must_equal_depth_of_path() {
+        let paths = vec!["01".to_string(), "01/01.mp3".to_string()];
+        let matched = match_paths(&paths, &matchers_of(r"\d+"));
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].path, "01");
+
+        let deep = match_paths(
+            &["01/01/01.mp3".to_string(), "01/01.mp3".to_string()],
+            &matchers_of(r"\d+/\d+\.mp3"),
+        );
+        assert_eq!(deep.len(), 1);
+        assert_eq!(deep[0].path, "01/01.mp3");
+    }
+
+    #[test]
+    fn groups_are_stitched_across_segments() {
+        let matched = match_paths(
+            &["s01/ep 02.mkv".to_string()],
+            &matchers_of(r"s(\d+)/ep (\d+)\.mkv"),
+        );
+        assert_eq!(matched.len(), 1);
         assert_eq!(
-            expand(&segments_of("$1[$2]$3"), &captures, 1),
-            "a[]b".to_string()
+            matched[0].groups,
+            vec![
+                Some("s01/ep 02.mkv".into()),
+                Some("01".into()),
+                Some("02".into()),
+            ]
         );
     }
 
     #[test]
-    fn plan_numbers_matches_in_name_order() {
-        let regex = Regex::new("b").unwrap();
-        let names = vec!["2b.txt".to_string(), "1b.txt".to_string()];
-        let renames = plan(&names, &regex, &segments_of("x$i")).unwrap();
+    fn plan_numbers_matches_in_path_order() {
+        let paths = vec!["b/2.txt".to_string(), "a/1.txt".to_string()];
+        let renames = plan(
+            &paths,
+            &matchers_of(r"(\w+)/\d\.txt"),
+            &parts_of("x$i"),
+            &exists_among(&[]),
+        )
+        .unwrap();
         assert_eq!(
             renames
                 .iter()
                 .map(|r| (r.from.as_str(), r.to.as_str()))
                 .collect::<Vec<_>>(),
-            vec![("1b.txt", "x1"), ("2b.txt", "x2")]
+            vec![("a/1.txt", "x1"), ("b/2.txt", "x2")]
         );
     }
 
     #[test]
-    fn plan_skips_unchanged_names() {
-        let regex = Regex::new("keep").unwrap();
-        let names = vec!["keep".to_string(), "drop".to_string()];
-        let renames = plan(&names, &regex, &segments_of("$0")).unwrap();
+    fn plan_skips_unchanged_paths() {
+        let renames = plan(
+            &["keep".to_string()],
+            &matchers_of("keep"),
+            &parts_of("$0"),
+            &exists_among(&[]),
+        )
+        .unwrap();
         assert!(renames.is_empty());
     }
 
     #[test]
     fn plan_rejects_unknown_group() {
-        let regex = Regex::new("x").unwrap();
-        let names = vec!["x".to_string()];
-        let err = plan(&names, &regex, &segments_of("$1")).unwrap_err();
+        let err = plan(
+            &["x".to_string()],
+            &matchers_of("x"),
+            &parts_of("$1"),
+            &exists_among(&[]),
+        )
+        .unwrap_err();
         assert!(matches!(
             err,
             PlanError::UnknownGroup {
@@ -315,55 +484,112 @@ mod tests {
 
     #[test]
     fn plan_rejects_same_target_from_two_files() {
-        let regex = Regex::new(r"^(a|b)\.txt$").unwrap();
-        let names = vec!["a.txt".to_string(), "b.txt".to_string()];
-        let err = plan(&names, &regex, &segments_of("same")).unwrap_err();
+        let err = plan(
+            &["a.txt".to_string(), "b.txt".to_string()],
+            &matchers_of(r"^(a|b)\.txt$"),
+            &parts_of("same"),
+            &exists_among(&[]),
+        )
+        .unwrap_err();
         assert!(matches!(err, PlanError::SameTarget { .. }));
     }
 
     #[test]
     fn plan_rejects_target_taken_by_bystander() {
-        let regex = Regex::new("^a$").unwrap();
-        let names = vec!["a".to_string(), "b".to_string()];
-        let err = plan(&names, &regex, &segments_of("b")).unwrap_err();
+        let err = plan(
+            &["a".to_string(), "b".to_string()],
+            &matchers_of("^a$"),
+            &parts_of("b"),
+            &exists_among(&["a", "b"]),
+        )
+        .unwrap_err();
         assert!(matches!(err, PlanError::TakenTarget { .. }));
     }
 
     #[test]
     fn plan_rejects_chained_target() {
-        let regex = Regex::new(".").unwrap();
-        let names = vec!["a".to_string(), "za".to_string()];
-        let err = plan(&names, &regex, &segments_of("z$0")).unwrap_err();
+        let err = plan(
+            &["a".to_string(), "za".to_string()],
+            &matchers_of("."),
+            &parts_of("z$0"),
+            &exists_among(&["a", "za"]),
+        )
+        .unwrap_err();
         assert!(matches!(err, PlanError::ChainedTarget { .. }));
     }
 
     #[test]
-    fn plan_rejects_target_with_path_inside() {
-        let regex = Regex::new("^(a)$").unwrap();
-        let names = vec!["a".to_string()];
-        let err = plan(&names, &regex, &segments_of("sub/$1")).unwrap_err();
-        assert!(matches!(err, PlanError::InvalidTarget { .. }));
+    fn plan_rejects_moving_directory_into_itself() {
+        let err = plan(
+            &["d/x".to_string()],
+            &matchers_of(r"d/x"),
+            &parts_of("d/x/y"),
+            &exists_among(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PlanError::TargetInsideSource { .. }));
     }
 
     #[test]
-    fn apply_renames_files() {
+    fn plan_allows_dots_and_folder_targets() {
+        let renames = plan(
+            &["01 x.mp3".to_string()],
+            &matchers_of(r"^(\d+) x\.mp3$"),
+            &parts_of("../sorted/$1/x.mp3"),
+            &exists_among(&[]),
+        )
+        .unwrap();
+        assert_eq!(renames[0].to, "../sorted/01/x.mp3");
+    }
+
+    #[test]
+    fn apply_creates_target_folders() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("a.txt"), b"").unwrap();
-        fs::write(dir.path().join("b.txt"), b"").unwrap();
+        fs::write(dir.path().join("ep 01.mkv"), b"").unwrap();
+        let renames = vec![Rename {
+            from: "ep 01.mkv".into(),
+            to: "01/mov.ts".into(),
+        }];
+        assert!(apply(dir.path(), &renames).is_empty());
+        assert!(dir.path().join("01/mov.ts").is_file());
+    }
+
+    #[test]
+    fn apply_renames_parent_before_children_and_rewrites_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("s01")).unwrap();
+        fs::write(dir.path().join("s01/ep1.mkv"), b"").unwrap();
+
         let renames = vec![
             Rename {
-                from: "a.txt".into(),
-                to: "1.txt".into(),
+                from: "s01/ep1.mkv".into(),
+                to: "s01/x/ep1.mkv".into(),
             },
             Rename {
-                from: "b.txt".into(),
-                to: "2.txt".into(),
+                from: "s01".into(),
+                to: "сезон 1".into(),
             },
         ];
+        assert!(apply(dir.path(), &renames).is_empty());
+        assert!(dir.path().join("сезон 1/x/ep1.mkv").is_file());
+        assert!(!dir.path().join("s01").exists());
+    }
+
+    #[test]
+    fn apply_refuses_to_overwrite_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), b"").unwrap();
+        fs::write(dir.path().join("b.txt"), b"occupied").unwrap();
+        let renames = vec![Rename {
+            from: "a.txt".into(),
+            to: "b.txt".into(),
+        }];
         let failures = apply(dir.path(), &renames);
-        assert!(failures.is_empty());
-        assert!(dir.path().join("1.txt").exists());
-        assert!(dir.path().join("2.txt").exists());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "occupied"
+        );
     }
 
     #[test]

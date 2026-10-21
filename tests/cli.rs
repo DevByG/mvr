@@ -135,3 +135,72 @@ fn rejects_pattern_group_missing_in_regex() {
     assert!(stderr.contains("$2"), "stderr: {stderr}");
     assert_eq!(names(dir.path()), vec!["x.txt"]);
 }
+
+#[test]
+fn replacement_with_slash_creates_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    touch(dir.path(), "ep 01.mkv");
+    touch(dir.path(), "ep 02.mkv");
+
+    let (stdout, stderr, code) = run(dir.path(), &[r"^ep (\d+)\.mkv$", "$1/mov.ts"], "y\n");
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("ep 01.mkv => 01/mov.ts"),
+        "stdout: {stdout}"
+    );
+    assert!(dir.path().join("01/mov.ts").is_file());
+    assert!(dir.path().join("02/mov.ts").is_file());
+}
+
+#[test]
+fn recursive_mode_matches_paths_by_segments() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("s01")).unwrap();
+    fs::create_dir_all(dir.path().join("s02")).unwrap();
+    touch(dir.path(), "s01/ep1.mkv");
+    touch(dir.path(), "s01/ep2.mkv");
+    touch(dir.path(), "s02/ep1.mkv");
+
+    let (stdout, stderr, code) = run(
+        dir.path(),
+        &["-r", r"^s(\d+)/ep(\d+)\.mkv$", "сезон $1/эпизод $2.mkv"],
+        "y\n",
+    );
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("s01/ep1.mkv => сезон 01/эпизод 1.mkv"),
+        "stdout: {stdout}"
+    );
+    assert!(dir.path().join("сезон 01/эпизод 2.mkv").is_file());
+    assert!(dir.path().join("сезон 02/эпизод 1.mkv").is_file());
+    assert!(!dir.path().join("s01/ep1.mkv").exists());
+}
+
+#[test]
+fn slashed_regex_requires_recursive_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("a")).unwrap();
+    touch(dir.path(), "a/x.txt");
+
+    let (stdout, stderr, code) = run(dir.path(), &[r"^a/x\.txt$", "y.txt"], "y\n");
+
+    assert_eq!(code, Some(2), "stdout: {stdout}");
+    assert!(stderr.contains("-r"), "stderr: {stderr}");
+    assert!(dir.path().join("a/x.txt").is_file());
+}
+
+#[test]
+fn recursive_single_segment_pattern_stays_on_top_level() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("01/01")).unwrap();
+    touch(dir.path(), "01/01/01.mp3");
+
+    let (stdout, stderr, code) = run(dir.path(), &["-r", r"^\d+$", "folder-$0"], "y\n");
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("01 => folder-01"), "stdout: {stdout}");
+    assert_eq!(stdout.matches("=>").count(), 1, "stdout: {stdout}");
+    assert!(dir.path().join("folder-01/01/01.mp3").is_file());
+}

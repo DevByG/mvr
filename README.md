@@ -56,7 +56,7 @@ PATTERN builds the new name (or path):
 | ------- | ----------------------------------------------------------- |
 | `$0`    | the whole match (the whole path for path patterns)          |
 | `$1..$9`| capture groups (numbered across path segments)               |
-| `$i`    | ordinal number of the file (from 1, alphabetically)          |
+| `$i`    | ordinal number of the file (from 1, natural order)         |
 | `$$`    | a literal `$`                                                |
 
 Behavior details:

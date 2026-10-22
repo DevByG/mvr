@@ -283,7 +283,9 @@ pub fn match_paths(paths: &[String], matchers: &[Regex]) -> Vec<MatchedFile> {
             });
         }
     }
-    matched.sort_by(|a, b| a.path.cmp(&b.path));
+    // natural order (like `ls -v`): digit runs compare numerically, so
+    // "s 2" precedes "s 10"; byte compare breaks numeric ties deterministically
+    matched.sort_by(|a, b| natord::compare(&a.path, &b.path).then_with(|| a.path.cmp(&b.path)));
     matched
 }
 
@@ -666,6 +668,42 @@ mod tests {
         assert!(std::ptr::eq(lang_of("C"), &EN));
         assert!(std::ptr::eq(lang_of(""), &EN));
         assert!(std::ptr::eq(lang_of("ru:en"), &RU));
+    }
+
+    #[test]
+    fn natural_order_numbers_inside_names() {
+        let paths: Vec<String> = ["s 101", "s 2", "s 11", "s 1", "s 10"]
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        let matched = match_paths(&paths, &matchers_of("s"));
+        let names: Vec<&str> = matched.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(names, vec!["s 1", "s 2", "s 10", "s 11", "s 101"]);
+
+        let renames = plan(&matched, &parts_of("e$i"), &exists_among(&[])).unwrap();
+        let targets: Vec<&str> = renames.iter().map(|r| r.to.as_str()).collect();
+        assert_eq!(targets, vec!["e1", "e2", "e3", "e4", "e5"]);
+    }
+
+    #[test]
+    fn natural_order_is_deterministic_for_numeric_ties() {
+        let one: Vec<String> = ["s 01", "s 1", "s 1a"]
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        let two: Vec<String> = ["s 1a", "s 1", "s 01"]
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        let first: Vec<String> = match_paths(&one, &matchers_of("s"))
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        let second: Vec<String> = match_paths(&two, &matchers_of("s"))
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(first, second);
     }
 
     #[test]

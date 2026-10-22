@@ -22,7 +22,7 @@ REGEX    matches file names in the current directory;
 PATTERN  the new name/path:
            $0      the whole match (the whole path for paths)
            $1..$9  capture groups (numbered across segments)
-           $i      ordinal file number (from 1, alphabetically)
+           $i      ordinal file number (from 1, natural order)
            $$      a literal $
          \"/\" in PATTERN sorts files into folders (created automatically),
          \"..\" and absolute paths are allowed - like mv;

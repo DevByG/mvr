@@ -21,10 +21,10 @@ use mvr::{
 
 const DIM: Style = Style::new().fg(Color::DarkGray);
 
-pub fn run_interactive() -> io::Result<()> {
+pub fn run_interactive(keep_open: bool) -> io::Result<()> {
     let mut terminal = ratatui::init();
     ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, keep_open);
     ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
     result
@@ -102,6 +102,7 @@ fn next_boundary(text: &str, index: usize) -> usize {
 
 struct App {
     msg: &'static Messages,
+    keep_open: bool,
     inputs: [Input; 2],
     focus: usize,
     case_insensitive: bool,
@@ -136,9 +137,10 @@ struct View {
     applyable: Option<Vec<Rename>>,
 }
 
-fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
+fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
     let mut app = App {
         msg: mvr::messages::detect(),
+        keep_open,
         inputs: [Input::new(), Input::new()],
         focus: 0,
         case_insensitive: true,
@@ -176,6 +178,14 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         // no wakeups of its own: the loop redraws per event only,
         // the read blocks until a key, mouse move or terminal resize
         let event = event::read()?;
+        // the summary line stays on screen until the user acts next;
+        // a terminal resize is not an action
+        if app.summary.is_some()
+            && app.keep_open
+            && matches!(event, Event::Key(_) | Event::Mouse(_))
+        {
+            app.summary = None;
+        }
         if let Event::Mouse(mouse) = &event {
             handle_mouse(&mut app, mouse, &view);
             continue;
@@ -538,7 +548,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
         );
     }
 
-    let help = if app.summary.is_some() {
+    let help = if app.summary.is_some() && !app.keep_open {
         app.msg.any_key_quit
     } else {
         app.msg.help

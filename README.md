@@ -21,6 +21,8 @@ Two faces, one binary:
   pattern and see where everything lands.
 
 In a pipe or without a tty a bare `mvr` prints usage instead of hanging a script.
+`mvr -i` keeps the TUI open after applying - tweak the inputs and run the next
+batch of renames in the same session.
 
 ## Install
 

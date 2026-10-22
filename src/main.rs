@@ -12,7 +12,8 @@ const USAGE: &str = "\
 mvr - batch rename files in the current directory
 
 usage: mvr <REGEX> <PATTERN>
-no arguments in a terminal - interactive mode (TUI) with a live preview
+no arguments in a terminal - interactive mode (TUI) with a live preview;
+mvr -i keeps the TUI open after applying - chained renames with tweaks
 
 REGEX    matches file names in the current directory;
          \"/\" in REGEX separates path components: pattern depth equals
@@ -44,8 +45,17 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    let interactive = ["-i", "--interactive"];
+    if args.iter().any(|arg| interactive.contains(&arg.as_str())) {
+        // -i only makes sense alone: the TUI that stays open after applying
+        if args.len() == 1 {
+            return interactive_or_usage(true);
+        }
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
     if args.is_empty() {
-        return interactive_or_usage();
+        return interactive_or_usage(false);
     }
     let [regex_arg, pattern_arg] = args.as_slice() else {
         eprintln!("{USAGE}");
@@ -54,9 +64,9 @@ fn main() -> ExitCode {
     cli(regex_arg, pattern_arg, mvr::messages::detect())
 }
 
-fn interactive_or_usage() -> ExitCode {
+fn interactive_or_usage(keep_open: bool) -> ExitCode {
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        return match tui::run_interactive() {
+        return match tui::run_interactive(keep_open) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("interactive mode: {err}");

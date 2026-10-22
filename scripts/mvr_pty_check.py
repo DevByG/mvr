@@ -317,6 +317,34 @@ def main():
         "f01.txt" in flat(chunks[12]) and "f30.txt" not in flat(chunks[12]),
         chunks[12][:300]))
 
+    l = f"{base}/l"
+    os.makedirs(l)
+    open(f"{l}/a1.txt", "w").close()
+    open(f"{l}/a2.txt", "w").close()
+    chunks, clean = drive(l, [
+        (b"a(\\d)\\.txt", 0.4),
+        (b"\r", 0.2),
+        (b"b$1.txt", 0.4),
+        (b"\r", 0.5),                        # apply -> renamed: 2, TUI stays
+        (RESIZE, 0.5),                        # full frame: summary + inputs intact
+        (b"\t", 0.2),                        # to the regex field
+        (b"\x7f" * 15, 0.3),                  # clear a(\d)\.txt (extra bs is a no-op)
+        (b"b(\\d)\\.txt", 0.4),              # match the renamed files
+        (b"\r", 0.2),                        # to the pattern field
+        (b"\x7f" * 15, 0.3),                  # clear b$1.txt
+        (b"a$1.txt", 0.4),                    # swap the target back
+        (b"\r", 0.5),                        # second apply
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ], args=["-i"])
+    results.append(check("-i: stays open after apply, inputs intact",
+        "renamed: 2" in chunks[4] and "b$1.txt" in flat(chunks[4]).replace(" ", ""),
+        chunks[4][:400]))
+    results.append(check("-i: second rename in the same session",
+        "renamed: 2" in chunks[11] and clean, chunks[11][:400]))
+    results.append(check("-i: files went a->b->a",
+        sorted(os.listdir(l)) == ["a1.txt", "a2.txt"], str(sorted(os.listdir(l)))))
+
     sys.exit(0 if all(results) else 1)
 
 

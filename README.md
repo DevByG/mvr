@@ -13,6 +13,18 @@ rename? (N/y) y
 renamed: 2
 ```
 
+A script part computes pieces a plain template cannot - zero-padding, case
+folding, anything:
+
+```console
+$ mvr 's (\d+)\.mkv' 'e$|if len(g1) < 2 { "0" + g1 } else { g1 }|$.mkv'
+s 1.mkv => e01.mkv
+s 2.mkv => e02.mkv
+s 10.mkv => e10.mkv
+rename? (N/y) y
+renamed: 3
+```
+
 Two faces, one binary:
 
 - `mvr REGEX PATTERN` — one-shot CLI: prints the `old => new` plan, asks, applies.
@@ -60,6 +72,7 @@ PATTERN builds the new name (or path):
 | `$1..$9`| capture groups (numbered across path segments)               |
 | `$i`    | ordinal number of the file (from 1, natural order)         |
 | `$$`    | a literal `$`                                                |
+| `$|…|$` | script part, a rhai expression: `g0`..`g9` hold the whole match and capture groups, `i` is the file number; must evaluate to a string (an int is stringified) |
 
 Behavior details:
 

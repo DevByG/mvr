@@ -355,16 +355,24 @@ fn preview_worker(
             }
             .unwrap_or_default();
         }
-        let view = match compile_matchers(&latest.regex, latest.case_insensitive) {
-            Ok(matchers) => build_view(&latest.regex, &latest.replacement, &paths, &matchers, msg),
-            Err(err) => View {
-                files: paths.len(),
-                match_count: 0,
-                body: Vec::new(),
-                status: None,
-                error: Some(format!("regex: {err}")),
-                applyable: None,
-            },
+        // build_view shows the type-a-regex hint for an empty field; the
+        // compile check must not turn that state into an error first
+        let view = if latest.regex.trim().is_empty() {
+            build_view(&latest.regex, &latest.replacement, &paths, &[], msg)
+        } else {
+            match compile_matchers(&latest.regex, latest.case_insensitive) {
+                Ok(matchers) => {
+                    build_view(&latest.regex, &latest.replacement, &paths, &matchers, msg)
+                }
+                Err(err) => View {
+                    files: paths.len(),
+                    match_count: 0,
+                    body: Vec::new(),
+                    status: None,
+                    error: Some(format!("regex: {err}")),
+                    applyable: None,
+                },
+            }
         };
         if views.send(view).is_err() {
             return;

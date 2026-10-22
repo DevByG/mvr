@@ -352,6 +352,14 @@ def main():
     for n in (1, 2, 10):
         open(f"{m}/s {n}.mkv", "w").close()
     script = b"e$|if len(g1) < 2 { \"0\" + g1 } else { g1 }|$.mkv"
+    fresh, _ = drive(m, [
+        (b"", 0.4),
+        (RESIZE, 0.4),
+        (b"\x1b", 0.3),
+    ])
+    results.append(check("fresh open: hint, not an empty-segment error",
+        "typearegex" in flat(fresh[1]) and "empty segment" not in fresh[1],
+        fresh[1][:300]))
     chunks, clean = drive(m, [
         (b"s (\\d+)\\.mkv", 0.5),
         (b"\r", 0.2),

@@ -401,9 +401,10 @@ pub fn plan_outcome(
     }
 
     let mut engine = Engine::new();
-    // statements are allowed, so a runaway loop must die on its own:
-    // the op budget turns it into a script error instead of a hang
-    engine.set_max_operations(1_000_000);
+    // a renamer script is a handful of string ops; native calls like
+    // replace() cost one op each, so 100 is plenty for legit scripts
+    // and kills a runaway loop on the spot
+    engine.set_max_operations(100);
     let mut renames: Vec<Rename> = Vec::new();
     for (position, file) in matched.iter().enumerate() {
         let to = match expand(&engine, parts, &file.groups, position + 1) {

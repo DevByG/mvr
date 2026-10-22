@@ -3,7 +3,7 @@
 # if you do not trust the prebuilt artifact.
 
 pkgname=mvr
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='batch rename files by regex: dry-run CLI + interactive TUI'
 arch=('x86_64')
@@ -11,7 +11,7 @@ url='https://github.com/DevByG/mvr'
 license=('GPL-3.0-only')
 depends=('gcc-libs')
 source=("$pkgname-v$pkgver-linux-amd64::$url/releases/download/v$pkgver/$pkgname-v$pkgver-linux-amd64")
-sha256sums=('5fde98ac48bf5c08bdd92b1e44ae31cd8a678d693c6685d503d6efe32e300d75')
+sha256sums=('1185c2ed7b2ceecb0bb94f5279d82807df608f094924cb6af2d7decb6ad401de')
 noextract=("$pkgname-v$pkgver-linux-amd64")
 
 package() {

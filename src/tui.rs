@@ -480,30 +480,38 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     ])
     .areas(frame.area());
 
-    let title = Line::from(vec![
-        Span::styled("mvr", Style::new().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            format!(
-                "  ·  {}: {}  ·  {}: {}",
-                app.msg.files,
-                app.paths.len(),
-                app.msg.matches,
-                view.match_count
-            ),
-            DIM,
+    let mut title_spans = vec![Span::styled(
+        "mvr",
+        Style::new().add_modifier(Modifier::BOLD),
+    )];
+    if app.keep_open {
+        title_spans.push(Span::styled(
+            " [interactive]",
+            Style::new().fg(Color::Yellow),
+        ));
+    }
+    title_spans.push(Span::styled(
+        format!(
+            "  ·  {}: {}  ·  {}: {}",
+            app.msg.files,
+            app.paths.len(),
+            app.msg.matches,
+            view.match_count
         ),
-        Span::styled(
-            format!(
-                "  ·  {}",
-                if app.case_insensitive {
-                    app.msg.case_ignored
-                } else {
-                    app.msg.case_exact
-                }
-            ),
-            DIM,
+        DIM,
+    ));
+    title_spans.push(Span::styled(
+        format!(
+            "  ·  {}",
+            if app.case_insensitive {
+                app.msg.case_ignored
+            } else {
+                app.msg.case_exact
+            }
         ),
-    ]);
+        DIM,
+    ));
+    let title = Line::from(title_spans);
     frame.render_widget(Paragraph::new(title), title_area);
 
     let [regex_row, pattern_area, _gap] = Layout::vertical([

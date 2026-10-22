@@ -340,6 +340,8 @@ def main():
     results.append(check("-i: stays open after apply, inputs intact",
         "renamed: 2" in chunks[4] and "b$1.txt" in flat(chunks[4]).replace(" ", ""),
         chunks[4][:400]))
+    results.append(check("-i: title shows the [interactive] badge",
+        "[interactive]" in chunks[4], chunks[4][:200]))
     results.append(check("-i: second rename in the same session",
         "renamed: 2" in chunks[11] and clean, chunks[11][:400]))
     results.append(check("-i: files went a->b->a",

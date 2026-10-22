@@ -25,6 +25,11 @@ PATTERN  the new name/path:
            $1..$9  capture groups (numbered across segments)
            $i      ordinal file number (from 1, natural order)
            $$      a literal $
+           $|…|$   script part (rhai, statements allowed, the last
+                   expression is the value): g0..g9 hold the whole match
+                   and capture groups, i is the file number; a mutating
+                   string method returns (), so end with the variable:
+                   let s = g0; s.replace(\"a\", \"b\"); s
          \"/\" in PATTERN sorts files into folders (created automatically),
          \"..\" and absolute paths are allowed - like mv;
          directories emptied by the renames are removed

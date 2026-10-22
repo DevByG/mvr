@@ -345,8 +345,10 @@ fn expand(
                         scope.push(format!("g{number}"), value.clone());
                     }
                 }
+                // full rhai (statements + final expression): mutating string
+                // methods return (), so the idiom is let/mutate/return-s
                 let value = engine
-                    .eval_expression_with_scope::<rhai::Dynamic>(&mut scope, body)
+                    .eval_with_scope::<rhai::Dynamic>(&mut scope, body)
                     .map_err(|err| format!("{err}"))?;
                 // a bare `i` or `len(g1)` is an int - stringify it instead
                 // of forcing every script into string concatenation
@@ -398,7 +400,10 @@ pub fn plan_outcome(
         };
     }
 
-    let engine = Engine::new();
+    let mut engine = Engine::new();
+    // statements are allowed, so a runaway loop must die on its own:
+    // the op budget turns it into a script error instead of a hang
+    engine.set_max_operations(1_000_000);
     let mut renames: Vec<Rename> = Vec::new();
     for (position, file) in matched.iter().enumerate() {
         let to = match expand(&engine, parts, &file.groups, position + 1) {
@@ -835,6 +840,28 @@ mod tests {
         .unwrap();
         let targets: Vec<&str> = renames.iter().map(|r| r.to.as_str()).collect();
         assert_eq!(targets, vec!["n1", "n2"]);
+    }
+
+    #[test]
+    fn script_part_supports_statements_and_mutating_methods() {
+        let renames = plan(
+            &matched_of(&["a-b.txt"], r"(a-b)"),
+            &parts_of("$|let s = g0; s.replace(\"a\", \"X\"); s|$"),
+            &exists_among(&[]),
+        )
+        .unwrap();
+        assert_eq!(renames[0].to, "X-b.txt");
+    }
+
+    #[test]
+    fn script_part_infinite_loop_hits_the_op_budget() {
+        let err = plan(
+            &matched_of(&["a.txt"], r"(a)"),
+            &parts_of("$|loop {}|$"),
+            &exists_among(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PlanError::ScriptError { .. }));
     }
 
     #[test]

@@ -72,7 +72,7 @@ PATTERN builds the new name (or path):
 | `$1..$9`| capture groups (numbered across path segments)               |
 | `$i`    | ordinal number of the file (from 1, natural order)         |
 | `$$`    | a literal `$`                                                |
-| `$|…|$` | script part, a rhai expression: `g0`..`g9` hold the whole match and capture groups, `i` is the file number; must evaluate to a string (an int is stringified) |
+| `$|…|$` | script part (rhai, statements allowed; the last expression is the value): `g0`..`g9` hold the whole match and capture groups, `i` is the file number; a string or int is used as-is |
 
 Behavior details:
 

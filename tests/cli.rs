@@ -321,3 +321,25 @@ fn mvr_lang_switches_interface_language() {
     assert!(stdout.contains("переименовать? (N/y)"), "stdout: {stdout}");
     assert!(stdout.contains("переименовано: 1"), "stdout: {stdout}");
 }
+
+#[test]
+fn script_part_pads_numbers_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["s 1.mkv", "s 2.mkv", "s 10.mkv"] {
+        touch(dir.path(), name);
+    }
+
+    let (stdout, stderr, code) = run(
+        dir.path(),
+        &[
+            r"^s (\d+)\.mkv$",
+            r#"e$|if len(g1) < 2 { "0" + g1 } else { g1 }|$.mkv"#,
+        ],
+        "y\n",
+    );
+
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("s 1.mkv => e01.mkv"), "stdout: {stdout}");
+    assert!(stdout.contains("s 10.mkv => e10.mkv"), "stdout: {stdout}");
+    assert_eq!(names(dir.path()), vec!["e01.mkv", "e02.mkv", "e10.mkv"]);
+}

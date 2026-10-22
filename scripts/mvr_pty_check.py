@@ -347,6 +347,27 @@ def main():
     results.append(check("-i: files went a->b->a",
         sorted(os.listdir(l)) == ["a1.txt", "a2.txt"], str(sorted(os.listdir(l)))))
 
+    m = f"{base}/m"
+    os.makedirs(m)
+    for n in (1, 2, 10):
+        open(f"{m}/s {n}.mkv", "w").close()
+    script = b"e$|if len(g1) < 2 { \"0\" + g1 } else { g1 }|$.mkv"
+    chunks, clean = drive(m, [
+        (b"s (\\d+)\\.mkv", 0.5),
+        (b"\r", 0.2),
+        (script, 0.6),
+        (RESIZE, 0.5),
+        (b"\r", 0.5),
+        (RESIZE, 0.5),
+        (b"\x1b", 0.4),
+    ])
+    results.append(check("script: preview pads numbers",
+        flat("s 1.mkv => e01.mkv") in flat(chunks[3]),
+        chunks[3][:400]))
+    results.append(check("script: applied",
+        "renamed: 3" in chunks[5] and sorted(os.listdir(m)) == ["e01.mkv", "e02.mkv", "e10.mkv"],
+        chunks[5][:300]))
+
     sys.exit(0 if all(results) else 1)
 
 

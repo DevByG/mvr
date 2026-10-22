@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use regex::{Regex, RegexBuilder};
+use rhai::{Engine, Scope};
 
 pub struct Scanner {
     root: PathBuf,
@@ -112,6 +113,7 @@ pub enum Part {
     Literal(String),
     Group(usize),
     Index,
+    Script(String),
 }
 
 pub struct MatchedFile {
@@ -131,6 +133,9 @@ pub enum PlanError {
     UnknownGroup {
         group: usize,
         available: usize,
+    },
+    ScriptError {
+        message: String,
     },
     SameTarget {
         target: String,
@@ -164,6 +169,9 @@ impl PlanError {
 impl fmt::Display for PlanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            PlanError::ScriptError { message } => {
+                write!(f, "script error: {message}")
+            }
             PlanError::InvalidRegex { segment, error } => {
                 write!(f, "invalid regex (segment {segment}): {error}")
             }
@@ -210,7 +218,7 @@ pub fn parse_replacement(pattern: &str) -> Vec<Part> {
 
     let mut parts = Vec::new();
     let mut literal = String::new();
-    let mut chars = pattern.chars();
+    let mut chars = pattern.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c != '$' {
@@ -218,6 +226,27 @@ pub fn parse_replacement(pattern: &str) -> Vec<Part> {
             continue;
         }
         match chars.next() {
+            Some('|') => {
+                // $ never appears in rhai identifiers, so the closing |$
+                // cannot occur inside the script body
+                let mut body = String::new();
+                let mut terminated = false;
+                while let Some(c) = chars.next() {
+                    if c == '|' && chars.peek() == Some(&'$') {
+                        chars.next();
+                        terminated = true;
+                        break;
+                    }
+                    body.push(c);
+                }
+                if terminated {
+                    flush(&mut literal, &mut parts);
+                    parts.push(Part::Script(body));
+                } else {
+                    literal.push_str("$|");
+                    literal.push_str(&body);
+                }
+            }
             Some('$') => literal.push('$'),
             Some('i') => {
                 flush(&mut literal, &mut parts);
@@ -289,15 +318,53 @@ pub fn match_paths(paths: &[String], matchers: &[Regex]) -> Vec<MatchedFile> {
     matched
 }
 
-fn expand(parts: &[Part], groups: &[Option<String>], index: usize) -> String {
-    parts
-        .iter()
-        .map(|part| match part {
-            Part::Literal(text) => text.clone(),
-            Part::Group(number) => groups.get(*number).cloned().flatten().unwrap_or_default(),
-            Part::Index => index.to_string(),
-        })
-        .collect()
+fn expand(
+    engine: &Engine,
+    parts: &[Part],
+    groups: &[Option<String>],
+    index: usize,
+) -> Result<String, String> {
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            Part::Literal(text) => out.push_str(text),
+            Part::Group(number) => out.push_str(
+                groups
+                    .get(*number)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_default()
+                    .as_str(),
+            ),
+            Part::Index => out.push_str(&index.to_string()),
+            Part::Script(body) => {
+                let mut scope = Scope::new();
+                scope.push("i", index as i64);
+                for (number, value) in groups.iter().enumerate().take(10) {
+                    if let Some(value) = value {
+                        scope.push(format!("g{number}"), value.clone());
+                    }
+                }
+                let value = engine
+                    .eval_expression_with_scope::<rhai::Dynamic>(&mut scope, body)
+                    .map_err(|err| format!("{err}"))?;
+                // a bare `i` or `len(g1)` is an int - stringify it instead
+                // of forcing every script into string concatenation
+                let text = if value.is_string() {
+                    value.into_string().unwrap()
+                } else if value.is_int() {
+                    value.as_int().unwrap().to_string()
+                } else {
+                    return Err(format!(
+                        "script must return a string, got {}",
+                        value.type_name()
+                    ));
+                };
+                out.push_str(&text);
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub struct PlanOutcome {
@@ -331,17 +398,26 @@ pub fn plan_outcome(
         };
     }
 
-    let renames: Vec<Rename> = matched
-        .iter()
-        .enumerate()
-        .filter_map(|(position, file)| {
-            let to = expand(parts, &file.groups, position + 1);
-            (to != file.path).then(|| Rename {
+    let engine = Engine::new();
+    let mut renames: Vec<Rename> = Vec::new();
+    for (position, file) in matched.iter().enumerate() {
+        let to = match expand(&engine, parts, &file.groups, position + 1) {
+            Ok(to) => to,
+            Err(message) => {
+                return PlanOutcome {
+                    renames: Vec::new(),
+                    error: Some(PlanError::ScriptError { message }),
+                    conflicting: Vec::new(),
+                };
+            }
+        };
+        if to != file.path {
+            renames.push(Rename {
                 from: file.path.clone(),
                 to,
-            })
-        })
-        .collect();
+            });
+        }
+    }
 
     let errors = validate_targets(&renames, exists);
     PlanOutcome {
@@ -728,6 +804,51 @@ mod tests {
     }
 
     #[test]
+    fn script_part_parses_with_pipe_dollars() {
+        assert_eq!(
+            parts_of("$|g1|$.txt"),
+            vec![Part::Script("g1".into()), Part::Literal(".txt".into())]
+        );
+        // unterminated: degrades to literal like every stray dollar
+        assert_eq!(parts_of("$|g1"), vec![Part::Literal("$|g1".into())]);
+    }
+
+    #[test]
+    fn script_part_pads_numbers() {
+        let renames = plan(
+            &matched_of(&["s 1.txt", "s 2.txt", "s 10.txt"], r"s (\d+)\.txt"),
+            &parts_of("e$|if len(g1) < 2 { \"0\" + g1 } else { g1 }|$.txt"),
+            &exists_among(&[]),
+        )
+        .unwrap();
+        let targets: Vec<&str> = renames.iter().map(|r| r.to.as_str()).collect();
+        assert_eq!(targets, vec!["e01.txt", "e02.txt", "e10.txt"]);
+    }
+
+    #[test]
+    fn script_part_sees_the_index() {
+        let renames = plan(
+            &matched_of(&["a.txt", "b.txt"], r"."),
+            &parts_of("n$|i|$"),
+            &exists_among(&[]),
+        )
+        .unwrap();
+        let targets: Vec<&str> = renames.iter().map(|r| r.to.as_str()).collect();
+        assert_eq!(targets, vec!["n1", "n2"]);
+    }
+
+    #[test]
+    fn script_part_error_is_a_plan_error() {
+        let err = plan(
+            &matched_of(&["a.txt"], r"(a)"),
+            &parts_of("$|missing_variable|$"),
+            &exists_among(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PlanError::ScriptError { .. }));
+    }
+
+    #[test]
     fn replacement_groups_are_single_digit() {
         assert_eq!(
             parts_of("$10"),
@@ -738,14 +859,25 @@ mod tests {
     #[test]
     fn expand_substitutes_groups_and_index() {
         let groups = vec![Some("img-42".into()), Some("img".into()), Some("42".into())];
-        assert_eq!(expand(&parts_of("$2_$1_$i"), &groups, 7), "42_img_7");
-        assert_eq!(expand(&parts_of("$0"), &groups, 1), "img-42");
+        let engine = Engine::new();
+        assert_eq!(
+            expand(&engine, &parts_of("$2_$1_$i"), &groups, 7).unwrap(),
+            "42_img_7"
+        );
+        assert_eq!(
+            expand(&engine, &parts_of("$0"), &groups, 1).unwrap(),
+            "img-42"
+        );
     }
 
     #[test]
     fn expand_missing_optional_group_is_empty() {
         let groups = vec![Some("ab".into()), Some("a".into()), None, Some("b".into())];
-        assert_eq!(expand(&parts_of("$1[$2]$3"), &groups, 1), "a[]b");
+        let engine = Engine::new();
+        assert_eq!(
+            expand(&engine, &parts_of("$1[$2]$3"), &groups, 1).unwrap(),
+            "a[]b"
+        );
     }
 
     #[test]

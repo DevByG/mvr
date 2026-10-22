@@ -12,6 +12,11 @@ use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{DefaultTerminal, Frame};
+use regex::Regex;
+
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::Duration;
 
 use mvr::messages::Messages;
 use mvr::{
@@ -107,7 +112,6 @@ struct App {
     focus: usize,
     case_insensitive: bool,
     scroll: usize,
-    paths: Vec<String>,
     summary: Option<String>,
     case_button: Option<Rect>,
     input_rects: [Option<Rect>; 2],
@@ -130,6 +134,7 @@ impl App {
 }
 
 struct View {
+    files: usize,
     match_count: usize,
     body: Vec<Line<'static>>,
     status: Option<String>,
@@ -145,7 +150,6 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
         focus: 0,
         case_insensitive: true,
         scroll: 0,
-        paths: Vec::new(),
         summary: None,
         case_button: None,
         input_rects: [None, None],
@@ -153,30 +157,50 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
         dragging: false,
     };
 
-    let mut scanner = Scanner::new(Path::new("."));
-    let mut scan_key = String::new();
+    // the preview worker owns the scanner and the whole view computation
+    // (fs walk, matching, plan, script eval) so the UI thread only draws
+    // and routes events; the poll timeout below is the result pump
+    let (requests_out, requests_in) = mpsc::channel::<PreviewRequest>();
+    let (views_out, views_in) = mpsc::channel::<View>();
+    let msg = app.msg;
+    thread::spawn(move || {
+        preview_worker(requests_in, views_out, Scanner::new(Path::new(".")), msg)
+    });
+
+    let mut view = View {
+        files: 0,
+        match_count: 0,
+        body: Vec::new(),
+        status: None,
+        error: None,
+        applyable: None,
+    };
+    let mut request_pending = true;
     let mut force_scan = false;
     loop {
-        // the walk only enters directories matched by earlier pattern
-        // segments and caches every directory it has read: pattern edits
-        // reuse the cache, only F5 and applying re-read the filesystem
-        let key = format!("{}|{}", app.case_insensitive, app.inputs[0].text);
-        if force_scan || key != scan_key {
-            let matchers = compile_matchers(&app.inputs[0].text, app.case_insensitive);
-            let scanned = match &matchers {
-                Ok(matchers) => scanner.scan(matchers, force_scan)?,
-                Err(_) => scanner.scan(&[], force_scan)?,
-            };
-            scan_key = key;
+        if request_pending {
+            if requests_out
+                .send(PreviewRequest {
+                    regex: app.inputs[0].text.clone(),
+                    replacement: app.inputs[1].text.clone(),
+                    case_insensitive: app.case_insensitive,
+                    force: force_scan,
+                })
+                .is_err()
+            {
+                return Ok(());
+            }
             force_scan = false;
-            app.paths = scanned;
+            request_pending = false;
         }
-
-        let view = build_view(&app);
+        while let Ok(newer) = views_in.try_recv() {
+            view = newer;
+        }
         terminal.draw(|frame| render(frame, &mut app, &view))?;
 
-        // no wakeups of its own: the loop redraws per event only,
-        // the read blocks until a key, mouse move or terminal resize
+        if !event::poll(Duration::from_millis(50))? {
+            continue;
+        }
         let event = event::read()?;
         // the summary line stays on screen until the user acts next;
         // a terminal resize is not an action
@@ -187,7 +211,9 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
             app.summary = None;
         }
         if let Event::Mouse(mouse) = &event {
-            handle_mouse(&mut app, mouse, &view);
+            if handle_mouse(&mut app, mouse, &view) {
+                request_pending = true;
+            }
             continue;
         }
         let Event::Key(key) = event else {
@@ -201,9 +227,11 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
             break;
         }
 
+        let mut state_changed = false;
         let handled_edit = match key.code {
             KeyCode::F(5) => {
                 force_scan = true;
+                state_changed = true;
                 false
             }
             KeyCode::Esc => return Ok(()),
@@ -211,6 +239,7 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.case_insensitive = !app.case_insensitive;
                 app.scroll = 0;
+                state_changed = true;
                 false
             }
             KeyCode::Tab => {
@@ -230,6 +259,7 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
                     let outcome = apply(Path::new("."), renames);
                     app.summary = Some(summarize(&outcome, renames.len(), app.msg));
                     force_scan = true;
+                    state_changed = true;
                 }
                 false
             }
@@ -281,12 +311,68 @@ fn run(terminal: &mut DefaultTerminal, keep_open: bool) -> io::Result<()> {
         };
         if handled_edit {
             app.scroll = 0;
+            state_changed = true;
+        }
+        if state_changed {
+            request_pending = true;
         }
     }
     Ok(())
 }
 
-fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
+struct PreviewRequest {
+    regex: String,
+    replacement: String,
+    case_insensitive: bool,
+    force: bool,
+}
+
+// latest-wins (the tuimux pattern): rapid keystrokes queue many requests,
+// only the final one is worth computing - everything queued behind it
+// is drained here
+fn preview_worker(
+    requests: Receiver<PreviewRequest>,
+    views: Sender<View>,
+    mut scanner: Scanner,
+    msg: &'static Messages,
+) {
+    let mut scan_key = String::new();
+    let mut paths: Vec<String> = Vec::new();
+    while let Ok(mut latest) = requests.recv() {
+        while let Ok(newer) = requests.try_recv() {
+            latest = newer;
+        }
+        // the walk only enters directories matched by earlier pattern
+        // segments and caches every directory it has read: pattern edits
+        // reuse the cache, only F5 and applying re-read the filesystem
+        let key = format!("{}|{}", latest.case_insensitive, latest.regex);
+        if latest.force || key != scan_key {
+            scan_key = key;
+            let matchers = compile_matchers(&latest.regex, latest.case_insensitive);
+            paths = match &matchers {
+                Ok(matchers) => scanner.scan(matchers, latest.force),
+                Err(_) => scanner.scan(&[], latest.force),
+            }
+            .unwrap_or_default();
+        }
+        let view = match compile_matchers(&latest.regex, latest.case_insensitive) {
+            Ok(matchers) => build_view(&latest.regex, &latest.replacement, &paths, &matchers, msg),
+            Err(err) => View {
+                files: paths.len(),
+                match_count: 0,
+                body: Vec::new(),
+                status: None,
+                error: Some(format!("regex: {err}")),
+                applyable: None,
+            },
+        };
+        if views.send(view).is_err() {
+            return;
+        }
+    }
+}
+
+fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) -> bool {
     let position = Position {
         x: mouse.column,
         y: mouse.row,
@@ -296,6 +382,7 @@ fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
             if app.case_button.is_some_and(|rect| rect.contains(position)) {
                 app.case_insensitive = !app.case_insensitive;
                 app.scroll = 0;
+                return true;
             } else if app.scrollbar.is_some_and(|rect| rect.contains(position)) {
                 app.dragging = true;
                 if let Some(bar) = app.scrollbar {
@@ -319,6 +406,7 @@ fn handle_mouse(app: &mut App, mouse: &MouseEvent, view: &View) {
         MouseEventKind::ScrollDown => app.set_scroll(app.scroll.saturating_add(3), view),
         _ => {}
     }
+    false
 }
 
 fn drag_scroll(app: &mut App, row: u16, bar: Rect, view: &View) {
@@ -340,8 +428,15 @@ fn drag_scroll(app: &mut App, row: u16, bar: Rect, view: &View) {
     app.scroll = scroll.min(max_scroll);
 }
 
-fn build_view(app: &App) -> View {
+fn build_view(
+    regex_text: &str,
+    replacement: &str,
+    paths: &[String],
+    matchers: &[Regex],
+    msg: &Messages,
+) -> View {
     let empty = View {
+        files: paths.len(),
         match_count: 0,
         body: Vec::new(),
         status: None,
@@ -349,36 +444,25 @@ fn build_view(app: &App) -> View {
         applyable: None,
     };
 
-    let regex_text = app.inputs[0].text.as_str();
     if regex_text.trim().is_empty() {
         return View {
-            body: vec![Line::styled(app.msg.type_regex_hint, DIM)],
+            body: vec![Line::styled(msg.type_regex_hint, DIM)],
             ..empty
         };
     }
-    let matchers = match compile_matchers(regex_text, app.case_insensitive) {
-        Ok(matchers) => matchers,
-        Err(err) => {
-            return View {
-                error: Some(format!("regex: {err}")),
-                ..empty
-            }
-        }
-    };
 
-    let matched = match_paths(&app.paths, &matchers);
+    let matched = match_paths(paths, matchers);
     let froms: Vec<Line<'static>> = matched
         .iter()
         .map(|file| Line::styled(file.path.clone(), DIM))
         .collect();
     if matched.is_empty() {
         return View {
-            status: Some(app.msg.nothing_found.into()),
+            status: Some(msg.nothing_found.into()),
             ..empty
         };
     }
 
-    let replacement = app.inputs[1].text.as_str();
     if replacement.is_empty() {
         return View {
             match_count: matched.len(),
@@ -397,7 +481,7 @@ fn build_view(app: &App) -> View {
             status: outcome
                 .error
                 .is_none()
-                .then(|| app.msg.nothing_to_change.into()),
+                .then(|| msg.nothing_to_change.into()),
             error: outcome.error.map(|err| err.to_string()),
             ..empty
         };
@@ -430,16 +514,17 @@ fn build_view(app: &App) -> View {
         })
         .collect();
     if outcome.error.is_none() {
-        let prunes = planned_prunes(&app.paths, &outcome.renames);
+        let prunes = planned_prunes(paths, &outcome.renames);
         if !prunes.is_empty() {
             body.push(Line::from(vec![
-                Span::styled(app.msg.emptied_removed, Style::new().fg(Color::Yellow)),
+                Span::styled(msg.emptied_removed, Style::new().fg(Color::Yellow)),
                 Span::from(prunes.join(", ")),
             ]));
         }
     }
     let error = outcome.error.map(|err| err.to_string());
     View {
+        files: paths.len(),
         match_count: matched.len(),
         body,
         status: None,
@@ -493,10 +578,7 @@ fn render(frame: &mut Frame, app: &mut App, view: &View) {
     title_spans.push(Span::styled(
         format!(
             "  ·  {}: {}  ·  {}: {}",
-            app.msg.files,
-            app.paths.len(),
-            app.msg.matches,
-            view.match_count
+            app.msg.files, view.files, app.msg.matches, view.match_count
         ),
         DIM,
     ));

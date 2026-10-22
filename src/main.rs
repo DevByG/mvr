@@ -37,6 +37,7 @@ examples:
   mvr 'img_(\\d+)\\.jpg' 'photo_$1.jpg'
   mvr 'doc_.+\\.pdf' '$i.pdf'
   mvr 's(\\d+)/ep (\\d+)\\.mkv' 'season $1/episode $2.mkv'
+  mvr 's (\\d+)\\.mkv' 'e$|if len(g1) < 2 { \"0\" + g1 } else { g1 }|$.mkv'
 ";
 
 fn main() -> ExitCode {

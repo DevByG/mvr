@@ -13,12 +13,15 @@ fn run(dir: &std::path::Path, args: &[&str], answer: &str) -> (String, String, O
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn mvr");
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(answer.as_bytes())
-        .unwrap();
+    // BrokenPipe here is expected: cases that exit without reading stdin
+    // (usage, nothing found) may close the pipe before we write
+    if let Err(err) = child.stdin.as_mut().unwrap().write_all(answer.as_bytes()) {
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected stdin write error"
+        );
+    }
     let output = child.wait_with_output().expect("wait mvr");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -44,12 +47,15 @@ fn run_env(
         command.env(key, value);
     }
     let mut child = command.spawn().unwrap();
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(answer.as_bytes())
-        .unwrap();
+    // BrokenPipe here is expected: cases that exit without reading stdin
+    // (usage, nothing found) may close the pipe before we write
+    if let Err(err) = child.stdin.as_mut().unwrap().write_all(answer.as_bytes()) {
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected stdin write error"
+        );
+    }
     let output = child.wait_with_output().unwrap();
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),

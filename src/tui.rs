@@ -29,10 +29,30 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 pub fn run_interactive(keep_open: bool) -> io::Result<()> {
     let mut terminal = ratatui::init();
     ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+    // a panic must not leave the terminal in mouse-reporting mode either;
+    // ratatui's own hook (chained here) restores raw mode and the screen
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+        default_hook(info);
+    }));
+
     let result = run(&mut terminal, keep_open);
-    ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-    ratatui::restore();
+    teardown()?;
     result
+}
+
+fn teardown() -> io::Result<()> {
+    ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
+    // mouse events already in flight sit in the tty queue; leaving raw
+    // mode hands them to the shell, which paints them as garbage input
+    while ratatui::crossterm::event::poll(Duration::from_millis(0))? {
+        if ratatui::crossterm::event::read().is_err() {
+            break;
+        }
+    }
+    ratatui::restore();
+    Ok(())
 }
 
 struct Input {

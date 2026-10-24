@@ -50,6 +50,8 @@ def drive(cwd, script, args=()):
         os.close(master)
         os.close(slave)
         os.chdir(cwd)
+        if os.environ.get("WRAP") == "1":
+            os.execv("/bin/sh", ["/bin/sh", "-c", f'"$@"; exec cat -v', "sh", MVR, *args])
         os.execv(MVR, [MVR, *args])
     os.close(slave)
 
@@ -375,6 +377,37 @@ def main():
     results.append(check("script: applied",
         "renamed: 3" in chunks[5] and sorted(os.listdir(m)) == ["e01.mkv", "e02.mkv", "e10.mkv"],
         chunks[5][:300]))
+
+    # exit-drain: mouse events queued during a scrollbar drag must not
+    # leak into the next program on the terminal (sh -> mvr -> cat -v)
+    n = f"{base}/n"
+    os.makedirs(n)
+    for i in range(1, 31):
+        open(f"{n}/f{i:02d}.txt", "w").close()
+    os.environ["WRAP"] = "1"
+    try:
+        drain_steps = [
+            (b"f\\d+", 0.5),
+            (b"\x1b[<65;10;12M", 0.3),           # wheel to overflow -> scrollbar
+            (b"\x1b[<0;100;20M", 0.1),           # press the thumb
+            (b"\x1b[<35;100;21M", 0.05),         # drag
+            (b"\x1b[<35;100;22M", 0.05),
+            (b"\x1b[<35;100;23M", 0.05),
+            (b"\x1b[<35;100;24M", 0.05),
+            (b"\x1b[<35;100;25M", 0.05),
+            (b"\x1b[<35;100;26M", 0.05),
+            (b"\x1b[<35;100;27M", 0.05),
+            (b"\x1b[<35;100;28M", 0.05),
+            (b"\x1b", 0.6),                       # quit mid-drag
+            (b"MARKER\n", 0.8),                   # cat -v reads the queue now
+        ]
+        chunks, clean = drive(n, drain_steps)
+    finally:
+        del os.environ["WRAP"]
+    tail = ANSI.sub("", chunks[-1])
+    results.append(check("exit drain: no mouse junk leaks to the next reader",
+        "MARKER" in tail and ";M" not in tail and "35;" not in tail,
+        repr(tail[:300])))
 
     sys.exit(0 if all(results) else 1)
 
